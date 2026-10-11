@@ -4,7 +4,7 @@
   "crons": [
     {
       "path": "/api/jobs/ticket-emails",
-      "schedule": "* * * * *"
+      "schedule": "0 8 * * *"
     }
   ]
 }

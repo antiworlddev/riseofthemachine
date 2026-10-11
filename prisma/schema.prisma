@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+enum OrderStatus {
+  RESERVED
+  PAID
+  EXPIRED
+  CANCELLED
+  REFUNDED
+}
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+enum TicketStatus {
+  ACTIVE
+  VOID
+}
+enum RegistrationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+model Event {
+  id String @id @default(uuid()) @db.Uuid
+  slug String @unique
+  name String
+  dateLocal String @db.VarChar(10)
+  startsAt DateTime? @db.Timestamptz(3)
+  timezone String @default("Africa/Lagos")
+  venue String?
+  salesEnabled Boolean @default(false)
+  registrationEnabled Boolean @default(false)
+  settingsRevision Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  tiers TicketTier[]
+  orders Order[]
+  competitions Competition[]
+  teams TeamRegistration[]
+  teamOptions TeamOption[]
+}
+model TicketTier {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  code String
+  name String
+  priceMinor Int
+  currency String @default("NGN") @db.VarChar(3)
+  capacity Int
+  reserved Int @default(0)
+  sold Int @default(0)
+  active Boolean @default(false)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  lines OrderLine[]
+  @@unique([eventId, code])
+  @@unique([id, eventId])
+}
+model Order {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  idempotencyKey String @unique
+  buyerSubject String?
+  needsReconciliation Boolean @default(false)
+  buyerName String
+  buyerEmail String
+  status OrderStatus @default(RESERVED)
+  totalMinor Int
+  currency String @default("NGN") @db.VarChar(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  paidAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  lines OrderLine[]
+  payments PaymentAttempt[]
+  @@unique([id, eventId])
+  @@index([status, expiresAt])
+  @@index([buyerEmail])
+  @@index([buyerSubject, createdAt])
+}
+model OrderLine {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  eventId String @db.Uuid
+  tierId String @db.Uuid
+  quantity Int
+  unitPriceMinor Int
+  order Order @relation(fields: [orderId, eventId], references: [id, eventId], onDelete: Restrict)
+  tier TicketTier @relation(fields: [tierId, eventId], references: [id, eventId], onDelete: Restrict)
+  tickets Ticket[]
+  @@unique([orderId, tierId])
+}
+model PaymentAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  reference String @unique
+  authorizationUrl String?
+  initializingAt DateTime? @db.Timestamptz(3)
+  domain String @default("test")
+  providerTransactionId String? @unique
+  amountMinor Int
+  currency String @db.VarChar(3)
+  status PaymentStatus @default(PENDING)
+  verifiedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  @@index([orderId])
+}
+model Ticket {
+  id String @id @default(uuid()) @db.Uuid
+  orderLineId String @db.Uuid
+  ordinal Int
+  encryptedToken String?
+  tokenHash String @unique @db.VarChar(64)
+  status TicketStatus @default(ACTIVE)
+  issuedAt DateTime @default(now()) @db.Timestamptz(3)
+  line OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Restrict)
+  admission Admission?
+  @@unique([orderLineId, ordinal])
+}
+model StaffUser {
+  id String @id @default(uuid()) @db.Uuid
+  authSubject String @unique
+  email String @unique
+  role String
+  enabled Boolean @default(false)
+  admissions Admission[]
+  auditLogs AuditLog[]
+}
+model Admission {
+  ticketId String @id @db.Uuid
+  staffId String @db.Uuid
+  scannedAt DateTime @default(now()) @db.Timestamptz(3)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  staff StaffUser @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  @@index([scannedAt])
+}
+model Representative {
+  id String @id @default(uuid()) @db.Uuid
+  authSubject String @unique
+  name String
+  email String @unique
+  phone String
+  verifiedAt DateTime? @db.Timestamptz(3)
+  teams TeamRegistration[]
+}
+model TeamRegistration {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  representativeId String @db.Uuid
+  teamKey String
+  teamName String
+  universityName String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  representative Representative @relation(fields: [representativeId], references: [id], onDelete: Restrict)
+  rosters SportRoster[]
+  option TeamOption @relation(fields: [eventId, teamKey], references: [eventId, key], onDelete: Restrict)
+  @@unique([eventId, teamKey])
+  @@unique([id, eventId])
+  @@index([representativeId])
+}
+model Competition {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  sportCode String
+  minPlayers Int?
+  maxPlayers Int?
+  registrationEnabled Boolean @default(false)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  rosters SportRoster[]
+  @@unique([eventId, sportCode])
+  @@unique([id, eventId])
+}
+model SportRoster {
+  id String @id @default(uuid()) @db.Uuid
+  teamId String @db.Uuid
+  competitionId String @db.Uuid
+  eventId String @db.Uuid
+  status RegistrationStatus @default(DRAFT)
+  revision Int @default(1)
+  submittedAt DateTime? @db.Timestamptz(3)
+  reviewedAt DateTime? @db.Timestamptz(3)
+  reviewNote String?
+  team TeamRegistration @relation(fields: [teamId, eventId], references: [id, eventId], onDelete: Restrict)
+  competition Competition @relation(fields: [competitionId, eventId], references: [id, eventId], onDelete: Restrict)
+  members RosterMember[]
+  @@unique([teamId, competitionId])
+  @@index([status])
+}
+model RosterMember {
+  id String @id @default(uuid()) @db.Uuid
+  rosterId String @db.Uuid
+  participantKey String
+  fullName String
+  jerseyNumber Int?
+  captain Boolean @default(false)
+  roster SportRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  @@unique([rosterId, participantKey])
+  @@unique([rosterId, jerseyNumber])
+}
+model OutboxMessage {
+  id String @id @default(uuid()) @db.Uuid
+  deduplicationKey String @unique
+  kind String
+  payload Json
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  deliveredAt DateTime? @db.Timestamptz(3)
+  attempts Int @default(0)
+  encryptedDeliveryPayload String?
+  firstAttemptAt DateTime? @db.Timestamptz(3)
+  lockedUntil DateTime? @db.Timestamptz(3)
+  leaseToken String? @db.Uuid
+  nextAttemptAt DateTime @default(now()) @db.Timestamptz(3)
+  lastErrorCode String?
+  providerMessageId String?
+  blocked Boolean @default(false)
+  @@index([deliveredAt, createdAt])
+}
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+  actorId String? @db.Uuid
+  action String
+  entityType String
+  entityId String
+  metadata Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  actor StaffUser? @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([entityType, entityId, createdAt])
+}
+
+model TeamOption {
+  id String @id @default(uuid()) @db.Uuid
+  eventId String @db.Uuid
+  key String
+  name String
+  universityName String?
+  enabled Boolean @default(false)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  registrations TeamRegistration[]
+  @@unique([eventId, key])
+}
+model ApiRateBucket {
+  key String @id
+  count Int @default(1)
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+}

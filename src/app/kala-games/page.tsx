@@ -1,0 +1,2 @@
+import Registration from './registration';
+export default function KalaGames() {return <section className="registration-page"><p className="eyebrow">19 DECEMBER 2026 · ABUJA</p><h1>KALA GAMES<span className="red">.</span></h1><p className="intro">One team. One representative. Your roster.</p><p>Registration is free. Sign in with a verified email, choose your team and sports, then save and submit each roster for review.</p><Registration/></section>;}

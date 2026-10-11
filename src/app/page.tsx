@@ -1,0 +1,5 @@
+import Link from 'next/link';
+export default function Home() {return <>
+ <section className="hero"><p className="eyebrow">ODUMODUBLVCK LIVE · ABUJA</p><h1>RISE OF<br/>THE MACHINE<span className="red">.</span></h1><p className="date">20 DECEMBER 2026</p><p className="intro">The music. The live experience. The city.</p><div className="actions"><Link className="button" href="/tickets">Tickets & tables ↗</Link><Link className="button secondary" href="/kala-games">Explore KALA GAMES ↗</Link></div></section>
+ <section className="grid features"><article><p className="eyebrow">19 DECEMBER 2026</p><h2>KALA GAMES</h2><p>Represent your university or team. One representative submits the roster. Registration is free.</p><Link href="/kala-games">Team registration ↗</Link></article><article><p className="eyebrow">THE DELUXE</p><h2>The music</h2><p>RISE OF THE MACHINE. Deluxe album details will be added here when announced.</p></article><article><p className="eyebrow">MERCHANDISE</p><h2>Wear the rise</h2><p>Merchandise details and availability will be announced here.</p></article></section>
+ </>;}

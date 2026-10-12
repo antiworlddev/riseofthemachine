@@ -4,13 +4,13 @@ import { authConfig } from './config';
 import { AppError } from './errors';
 export type Identity = { subject: string; email: string };
 const identity = z.object({ subject: z.string().min(1).max(500), email: z.email().max(254) });
-export async function seal(payload: Record<string, unknown>, purpose: 'session' | 'flow', lifetime: number) {
+export async function seal(payload: Record<string, unknown>, purpose: 'session' | 'flow' | 'merch-quote', lifetime: number) {
   const cfg = authConfig();
   return new EncryptJWT({ ...payload, purpose }).setProtectedHeader({ alg: 'dir', enc: 'A256GCM' })
     .setIssuedAt().setIssuer('rise-of-the-machine').setAudience(cfg.APP_ORIGIN)
     .setExpirationTime(Math.floor(Date.now()/1000) + lifetime).encrypt(Buffer.from(cfg.SESSION_KEY, 'hex'));
 }
-export async function unseal(token: string, purpose: 'session' | 'flow') {
+export async function unseal(token: string, purpose: 'session' | 'flow' | 'merch-quote') {
   const cfg = authConfig();
   const { payload } = await jwtDecrypt(token, Buffer.from(cfg.SESSION_KEY, 'hex'), {
     issuer: 'rise-of-the-machine', audience: cfg.APP_ORIGIN,

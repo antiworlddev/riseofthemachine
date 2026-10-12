@@ -51,3 +51,15 @@ test('configuration fails closed and does not expose secrets',async()=>{
  const key=process.env.SESSION_KEY;delete process.env.SESSION_KEY;
  try {const response=await route(async()=>{authConfig();return Response.json({ok:true});});assert.equal(response.status,503);assert.equal((await response.json()).error.code,'AUTH_NOT_CONFIGURED');}finally{process.env.SESSION_KEY=key;}
 });
+test('database diagnostics include the Prisma code without raw error content',async()=>{
+ const {Prisma}=await import('@prisma/client');
+ const captured:string[]=[];const original=console.error;
+ console.error=(value:unknown)=>{captured.push(String(value));};
+ try {
+  const response=await route(async()=>{throw new Prisma.PrismaClientKnownRequestError('secret-password and private@example.com',{code:'P2028',clientVersion:'6.19.0'});});
+  assert.equal(response.status,503);
+  const log=JSON.parse(captured[0]);assert.equal(log.prismaCode,'P2028');assert.equal(log.errorType,'PrismaClientKnownRequestError');
+  assert.equal(captured[0].includes('secret-password'),false);assert.equal(captured[0].includes('private@example.com'),false);
+  assert.equal((await response.text()).includes('secret-password'),false);
+ } finally {console.error=original;}
+});

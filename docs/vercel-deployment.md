@@ -2,7 +2,7 @@
 
 ## Current plan and schedules
 
-The current development setup uses native daily cron on Vercel Hobby. Run `node --import tsx scripts/setup-cron.ts daily` from the project root to merge these jobs into your existing vercel.json:
+The current deployment uses Vercel Pro. Run `node --import tsx scripts/setup-cron.ts pro` to configure all three jobs once per minute. Keep the existing Pro vercel.json when installing application updates. The daily profile below remains a Hobby-compatible fallback. Run `node --import tsx scripts/setup-cron.ts daily` from the project root to merge these jobs into your existing vercel.json:
 
 | Endpoint | Daily schedule (UTC) | Work |
 | --- | --- | --- |

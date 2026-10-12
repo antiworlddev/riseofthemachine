@@ -1,6 +1,6 @@
 # Approved expansion scope — 12 October 2026
 
-These items are approved for subsequent implementation, not optional scope decisions. The payment-support update does not yet implement them.
+These items are approved for subsequent implementation, not optional scope decisions. Shipping payment implementation is now included. Table booking management and VIP parking are included. KALA expansion remains subsequent work.
 
 ## KALA GAMES
 
@@ -12,15 +12,15 @@ These items are approved for subsequent implementation, not optional scope decis
 
 ## Tables and VIP parking
 
-- Add organizer table booking management for the existing ₦3m, ₦5m and ₦10m packages.
-- Include VIP parking entitlements for confirmed table buyers.
+- Implemented: Engines ₦3m, Autobots ₦5m, Machineries ₦10m; one table per Paystack checkout and organizer booking management.
+- Implemented: private VIP parking codes issued after verified payment, with separate one-time parking entry.
 - Configure parking allocation per package/booking and overall capacity; do not invent the number of vehicles/passes.
 - Payment/booking confirmation must precede entitlements. Parking admission should have its own one-time check-in and should not consume a concert ticket admission.
 - Cancellation/refunds must revoke unused booking/parking entitlements consistently.
 
 ## Automated shipping payments
 
-- Replace separately quoted/off-platform delivery fees with server-priced delivery charges collected through Paystack.
+- Implemented: server-priced delivery charges collected with merchandise through Paystack for new orders; legacy orders retain their original terms.
 - Initial implementation can use organizer-managed Nigerian delivery zones/rates; no carrier or courier API has been selected.
 - Display the delivery fee and complete checkout total before payment, snapshot the selected rate and address, and validate the quoted fee on the server.
 - Event pickup remains free of a delivery charge.
@@ -29,8 +29,8 @@ These items are approved for subsequent implementation, not optional scope decis
 ## Implementation sequence
 
 1. Complete payment support/full refunds and hosted acceptance (current update).
-2. Automated shipping fee collection and rate administration.
-3. Table booking management and VIP parking.
+2. Automated shipping fee collection and rate administration — implemented; real rates and hosted acceptance remain.
+3. Table booking management and VIP parking — implemented; configure real capacities/allocations and complete hosted acceptance.
 4. Additional KALA administration, eligibility and tournament operations.
 5. Notifications/support tools, catalogue/search/export improvements and remaining production hardening.
 

@@ -1,3 +1,4 @@
+import {isTable,changeParkingStock,issueParking} from './table-stock';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {Prisma,type PrismaClient} from '@prisma/client';
 import {z} from 'zod';
@@ -23,7 +24,7 @@ export async function paymentOperations(db:PrismaClient,identity:Identity,input:
 async function readOrder(tx:Prisma.TransactionClient,id:string,kind:'TICKET'|'MERCH'){
  if(kind==='TICKET'){
   const o=await tx.order.findUnique({where:{id},include:{event:true,lines:{include:{tier:true}},payments:true}});if(!o||o.event.slug!==concertSlug())throw new AppError(404,'ORDER_NOT_FOUND','Order not found.');
-  return {...o,kind,fulfilmentStatus:'PENDING',payment:o.payments.length===1?o.payments[0]:null,lines:o.lines.map(l=>({id:l.id,stockId:l.tierId,quantity:l.quantity}))};
+  return {...o,kind,fulfilmentStatus:'PENDING',payment:o.payments.length===1?o.payments[0]:null,lines:o.lines.map(l=>({id:l.id,stockId:l.tierId,quantity:l.quantity,parkingQuantity:l.parkingQuantity,table:isTable(l.tier.code)}))};
  }
  const o=await tx.merchOrder.findUnique({where:{id},include:{lines:true,payments:true}});if(!o||o.eventSlug!==concertSlug())throw new AppError(404,'ORDER_NOT_FOUND','Order not found.');
  return {...o,kind,payment:o.payments.length===1?o.payments[0]:null,lines:o.lines.map(l=>({id:l.id,stockId:l.variantId,quantity:l.quantity}))};
@@ -54,6 +55,7 @@ async function changeStock(tx:Prisma.TransactionClient,o:Awaited<ReturnType<type
   const data=mode==='SELL'?{sold:{increment:line.quantity},...(o.status==='RESERVED'?{reserved:{decrement:line.quantity}}:{})}:mode==='RELEASE'?{reserved:{decrement:line.quantity}}:{sold:{decrement:line.quantity}};
   if(o.kind==='TICKET')await tx.ticketTier.update({where:{id:line.stockId},data});else await tx.merchVariant.update({where:{id:line.stockId},data});
  }
+ if(o.kind==='TICKET')await changeParkingStock(tx,o.eventId,o.lines.reduce((n,l)=>n+l.parkingQuantity,0),mode==='SELL'?(o.status==='RESERVED'?'SELL':'REACQUIRE'):mode);
 }
 export async function operatePayment(db:PrismaClient,identity:Identity,input:z.infer<typeof operationInput>,supplied?:RefundGateway){
  await requireAdmin(db,identity);const gateway=supplied??refundGateway();
@@ -81,17 +83,18 @@ export async function operatePayment(db:PrismaClient,identity:Identity,input:z.i
    const update={status:'PAID' as const,paidAt,needsReconciliation:false,operationsRevision:{increment:1}};
    if(o.kind==='TICKET'){
     await tx.order.update({where:{id:o.id},data:update});
-    for(const line of o.lines)for(let ordinal=1;ordinal<=line.quantity;ordinal++){const id=randomUUID(),token=randomBytes(32).toString('base64url');await tx.ticket.create({data:{id,orderLineId:line.id,ordinal,tokenHash:hashTicket(token),encryptedToken:encryptTicket(token,id)}});}
-    await tx.outboxMessage.create({data:{deduplicationKey:`tickets:${o.id}`,kind:'TICKETS_ISSUED',payload:{orderId:o.id}}});
+    for(const line of o.lines.filter(l=>!l.table))for(let ordinal=1;ordinal<=line.quantity;ordinal++){const id=randomUUID(),token=randomBytes(32).toString('base64url');await tx.ticket.create({data:{id,orderLineId:line.id,ordinal,tokenHash:hashTicket(token),encryptedToken:encryptTicket(token,id)}});}
+    await issueParking(tx,o.lines);
+    if(o.lines.some(l=>!l.table))await tx.outboxMessage.create({data:{deduplicationKey:`tickets:${o.id}`,kind:'TICKETS_ISSUED',payload:{orderId:o.id}}});
    }else await tx.merchOrder.update({where:{id:o.id},data:update});
    await tx.auditLog.create({data:{actorId,action:'PAYMENT_RECONCILIATION_FULFILLED',entityType:input.kind,entityId:o.id,metadata:{reason:input.reason,reference:o.payment!.reference}}});return {resolved:true};
   }
-  if(o.kind==='TICKET'&&await tx.admission.count({where:{ticket:{line:{orderId:o.id}}}}))throw new AppError(409,'ALREADY_ADMITTED','A ticket has been used. This refund requires separate support review.');
+  if(o.kind==='TICKET'&&(o.tableArrivedAt||await tx.admission.count({where:{ticket:{line:{orderId:o.id}}}})||await tx.parkingAdmission.count({where:{pass:{line:{orderId:o.id}}}})))throw new AppError(409,'ALREADY_ADMITTED','Admission or parking has been used. This refund requires separate support review.');
   if(o.kind==='MERCH'&&['DISPATCHED','COMPLETED'].includes(o.fulfilmentStatus))throw new AppError(409,'ALREADY_FULFILLED','Dispatched or collected goods need a returns review.');
   if(o.status==='RESERVED')await changeStock(tx,o,'RELEASE');
   const update={needsReconciliation:true,...(o.status==='RESERVED'?{status:'CANCELLED' as const}:{}),operationsRevision:{increment:1}};
   if(o.kind==='TICKET'){
-   await tx.order.update({where:{id:o.id},data:update});await tx.ticket.updateMany({where:{line:{orderId:o.id}},data:{status:'VOID'}});
+   await tx.order.update({where:{id:o.id},data:update});await tx.ticket.updateMany({where:{line:{orderId:o.id}},data:{status:'VOID'}});await tx.parkingPass.updateMany({where:{line:{orderId:o.id}},data:{status:'VOID'}});
    await tx.outboxMessage.updateMany({where:{deduplicationKey:`tickets:${o.id}`,deliveredAt:null},data:{blocked:true,lastErrorCode:'REFUND_HOLD'}});
   }else await tx.merchOrder.update({where:{id:o.id},data:{...update,fulfilmentStatus:'PENDING',revision:{increment:1}}});
   const refund=await tx.paymentRefund.create({data:{...(input.kind==='TICKET'?{orderId:o.id}:{merchOrderId:o.id}),reference:o.payment!.reference,transactionId:String(data.id),domain:gateway.domain,amountMinor:data.amount,stockBasis:o.status==='PAID'?'SOLD':'NONE',reason:input.reason,requestedBy:actorId}});

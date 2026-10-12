@@ -1,3 +1,4 @@
+import { tablePackages } from "../src/server/table-stock";
 import { seedMerch } from "./seed-merch";
 import { PrismaClient } from "@prisma/client";
 const db = new PrismaClient();
@@ -22,6 +23,17 @@ try {
       update: {},
       create: { eventId: concert.id, ...tier, capacity: 0, active: false },
     });
+  for (const tier of tablePackages)
+    await db.ticketTier.upsert({
+      where: { eventId_code: { eventId: concert.id, code: tier.code } },
+      update: { name: tier.name },
+      create: { eventId: concert.id, ...tier, capacity: 0, active: false },
+    });
+  await db.tableInventory.upsert({
+    where: { eventId: concert.id },
+    update: {},
+    create: { eventId: concert.id },
+  });
   const event = await db.event.upsert({
     where: { slug: process.env.KALA_EVENT_SLUG || "kala-games-2026" },
     update: {},
@@ -39,7 +51,7 @@ try {
     });
   await seedMerch(db);
   console.log(
-    "Events created if missing. Confirmed Regular/VIP prices added if missing. Capacity is zero and ticket sales remain closed. No team entries or registrations enabled.",
+    "Events created if missing. Confirmed ticket/table prices added if missing. Capacity is zero and ticket sales remain closed. No team entries or registrations enabled.",
   );
 } finally {
   await db.$disconnect();

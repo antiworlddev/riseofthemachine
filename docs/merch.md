@@ -53,3 +53,7 @@ Buy one tee and cap for pickup using Paystack TEST, then confirm at /merch/order
 ## Organizer inventory
 
 Open `/admin/merch/inventory` from Merch operations. Each product shows size, available, reserved, sold and total capacity. Capacity includes sold and reserved units; it is not a quantity to add. Save applies all size capacities and the product sales switch atomically. Closing a product prevents new reservations while existing orders remain valid. Opening also requires configured payments and MERCH_SALES_ENABLED=true. Stale settings require a reload. Counts reflect stored reservations; expiry processing releases expired holds. Test and live orders share inventory, so use separate databases for production and test practice. No migration is required for this screen.
+
+## Automated shipping update
+
+New delivery checkout now collects the configured delivery fee with merchandise through Paystack; configure destinations at /admin/merch/shipping. The old separately quoted flow described above applies only to orders made before this update. New order receipts retain a shipping snapshot, and full pre-dispatch refunds include paid shipping. Event pickup remains free. See shipping-payments.md for schema/migration installation, pricing rules and acceptance.

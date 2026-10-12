@@ -16,6 +16,23 @@ test('migrations and database invariants', async t => {
   await q('INSERT INTO "TicketTier" (id,"eventId",code,name,"priceMinor",capacity) VALUES ($1,$2,\'regular\',\'Regular\',2000000,2)',[id(3),id(1)]);
   await q('INSERT INTO "Order" (id,"eventId","idempotencyKey","buyerName","buyerEmail","totalMinor","expiresAt") VALUES ($1,$2,\'request-1\',\'Test Buyer\',\'test@example.com\',2000000,now()+interval \'15 minutes\')',[id(4),id(1)]);
   await q('INSERT INTO "OrderLine" (id,"orderId","eventId","tierId",quantity,"unitPriceMinor") VALUES ($1,$2,$3,$4,1,2000000)',[id(5),id(4),id(1),id(3)]);
+  await q('INSERT INTO "MerchProduct" (id,slug,name,kind,description,"priceMinor") VALUES ($1,\'tee-test\',\'Tee\',\'TEE\',\'Test\',5000000)',[id(90)]);
+  await q('INSERT INTO "MerchVariant" (id,"productId",label,capacity) VALUES ($1,$2,\'S\',2)',[id(91),id(90)]);
+  await q('INSERT INTO "ShippingRate" (id,"eventSlug",state,"stateKey","feeMinor",note,enabled) VALUES ($1,\'concert\',\'FCT\',\'fct\',500000,\'Synthetic test delivery\',true)',[id(200)]);
+  const shippingSnapshot={rateId:id(200),revision:1,state:'FCT',feeMinor:500000,currency:'NGN',note:'Synthetic test delivery'};
+  await q('INSERT INTO "MerchOrder" (id,"eventSlug","idempotencyKey","requestHash","buyerSubject","buyerName","buyerEmail",phone,fulfilment,address,"deliveryTerms","totalMinor","expiresAt","shippingFeeMinor","shippingRateId","shippingSnapshot") VALUES ($1,\'concert\',\'shipping-test\',\'test\',\'buyer\',\'Test Buyer\',\'test@example.com\',\'+2348000000000\',\'DELIVERY\',$2,\'Included delivery\',5500000,now(),500000,$3,$4)',[id(201),{state:'FCT',country:'Nigeria'},id(200),shippingSnapshot]);
+  await q('INSERT INTO "TableInventory" ("eventId","parkingCapacity") VALUES ($1,2)',[id(1)]);
+  await t.test('parking capacity cannot undershoot held and sold allocations',()=>rejects('UPDATE "TableInventory" SET "parkingSold"=2,"parkingReserved"=1 WHERE "eventId"=$1',[id(1)]));
+  await t.test('individual ticket tiers cannot configure table parking allocations',()=>rejects('UPDATE "TicketTier" SET "parkingPerTable"=2 WHERE id=$1',[id(3)]));
+  await t.test('unpaid or non-table orders cannot issue parking passes',()=>rejects('INSERT INTO "ParkingPass" (id,"orderLineId",ordinal,"tokenHash","encryptedToken") VALUES ($1,$2,1,$3,\'test\')',[id(300),id(5),'c'.repeat(64)]));
+  await t.test('unknown parking passes cannot be checked in',()=>rejects('INSERT INTO "ParkingAdmission" ("passId","staffId") VALUES ($1,$2)',[id(300),id(50)]));
+  await t.test('negative shipping fees rejected',()=>rejects('UPDATE "ShippingRate" SET "feeMinor"=-1 WHERE id=$1',[id(200)]));
+  await t.test('pickup cannot carry delivery fees or snapshots',()=>rejects('UPDATE "MerchOrder" SET fulfilment=\'PICKUP\',address=NULL,"deliveryTerms"=NULL WHERE id=$1',[id(201)]));
+  await t.test('delivery snapshot amount must match charged shipping',()=>rejects('UPDATE "MerchOrder" SET "shippingFeeMinor"=0 WHERE id=$1',[id(201)]));
+  await t.test('delivery snapshot destination cannot disagree with address',()=>rejects('UPDATE "MerchOrder" SET address=$1 WHERE id=$2',[{state:'Lagos',country:'Nigeria'},id(201)]));
+  await t.test('shipping cannot consume the entire order total',()=>rejects('UPDATE "MerchOrder" SET "totalMinor"=500000 WHERE id=$1',[id(201)]));
+  await t.test('merch stock cannot oversell',()=>rejects('UPDATE "MerchVariant" SET sold=2,reserved=1 WHERE id=$1',[id(91)]));
+  await t.test('merch price must be positive',()=>rejects('UPDATE "MerchProduct" SET "priceMinor"=0 WHERE id=$1',[id(90)]));
   await t.test('negative money rejected',()=>rejects('UPDATE "TicketTier" SET "priceMinor"=-1 WHERE id=$1',[id(3)]));
   await t.test('overselling rejected',()=>rejects('UPDATE "TicketTier" SET sold=2,reserved=1 WHERE id=$1',[id(3)]));
   await t.test('cross-event line rejected',()=>rejects('UPDATE "OrderLine" SET "eventId"=$1 WHERE id=$2',[id(2),id(5)]));
@@ -30,6 +47,11 @@ test('migrations and database invariants', async t => {
   await t.test('verification requires provider evidence',()=>rejects('UPDATE "PaymentAttempt" SET status=\'VERIFIED\' WHERE id=$1',[id(8)]));
   await t.test('duplicate payment reference rejected',()=>rejects('INSERT INTO "PaymentAttempt" (id,"orderId",reference,"amountMinor",currency) VALUES ($1,$2,\'paystack-test\',2000000,\'NGN\')',[id(9),id(4)]));
   await q('INSERT INTO "StaffUser" (id,"authSubject",email,role) VALUES ($1,\'scanner-1\',\'scan@example.com\',\'SCANNER\')',[id(10)]);
+  await q('INSERT INTO "PaymentRefund" (id,"orderId",reference,"transactionId",domain,"amountMinor","stockBasis",reason,"requestedBy","updatedAt") VALUES ($1,$2,$3,\'123\',\'test\',2000000,\'SOLD\',\'Test reason\',$4,now())',[id(100),id(4),'rotm-'+'a'.repeat(32),id(10)]);
+  await t.test('refund must retain exactly one parent order',()=>rejects('UPDATE "PaymentRefund" SET "orderId"=NULL WHERE id=$1',[id(100)]));
+  await t.test('processed refund requires provider evidence',()=>rejects('UPDATE "PaymentRefund" SET status=\'processed\' WHERE id=$1',[id(100)]));
+  await t.test('refund amount cannot be negative',()=>rejects('UPDATE "PaymentRefund" SET "amountMinor"=-1 WHERE id=$1',[id(100)]));
+  await t.test('refund audit actor must exist',()=>rejects('UPDATE "PaymentRefund" SET "requestedBy"=$1 WHERE id=$2',[id(101),id(100)]));
   const scan = () => q('INSERT INTO "Admission" ("ticketId","staffId") VALUES ($1,$2)',[id(6),id(10)]);
   await t.test('disabled scanner rejected',()=>assert.rejects(scan));
   await q('UPDATE "StaffUser" SET enabled=true WHERE id=$1',[id(10)]);
@@ -55,6 +77,11 @@ test('migrations and database invariants', async t => {
   await q('UPDATE "SportRoster" SET status=\'SUBMITTED\',"submittedAt"=now() WHERE id=$1',[id(15)]);
   await t.test('submitted roster edits rejected',()=>rejects('UPDATE "RosterMember" SET "fullName"=\'Edited\' WHERE id=$1',[id(16)]));
   await t.test('submitted roster deletion rejected',()=>rejects('DELETE FROM "RosterMember" WHERE id=$1',[id(16)]));
+  await q('UPDATE "SportRoster" SET status=\'REJECTED\' WHERE id=$1',[id(15)]);
+  await t.test('rejected roster corrections allowed',()=>q('UPDATE "RosterMember" SET "fullName"=\'Corrected\' WHERE id=$1',[id(16)]));
+  await q('UPDATE "SportRoster" SET status=\'SUBMITTED\' WHERE id=$1',[id(15)]);
+  await q('UPDATE "SportRoster" SET status=\'APPROVED\' WHERE id=$1',[id(15)]);
+  await t.test('approved roster edits rejected',()=>rejects('UPDATE "RosterMember" SET "fullName"=\'Forbidden\' WHERE id=$1',[id(16)]));
   await t.test('registration has no payment linkage',async()=>{
    const {rows}=await q('SELECT column_name FROM information_schema.columns WHERE table_name=\'TeamRegistration\'');
    assert.equal(rows.some(r=>/payment|order|fee/i.test(r.column_name)),false);

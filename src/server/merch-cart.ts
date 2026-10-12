@@ -1,0 +1,5 @@
+import {z} from 'zod';
+import {createHash} from 'node:crypto';
+export const merchItems=z.array(z.object({variantId:z.uuid().transform(v=>v.toLowerCase()),quantity:z.number().int().min(1).max(10)}).strict()).min(1).max(10).superRefine((v,c)=>{if(new Set(v.map(i=>i.variantId)).size!==v.length)c.addIssue({code:'custom',message:'Combine duplicate cart items.'});if(v.reduce((n,i)=>n+i.quantity,0)>10)c.addIssue({code:'custom',message:'Maximum ten items per order.'});});
+export const cartHash=(items:{variantId:string;quantity:number}[])=>createHash('sha256').update(JSON.stringify(items.map(i=>({variantId:i.variantId,quantity:i.quantity})).sort((a,b)=>a.variantId.localeCompare(b.variantId)))).digest('hex');
+export const pricesHash=(items:{variantId:string;quantity:number;unitPriceMinor:number}[])=>createHash('sha256').update(JSON.stringify(items.map(i=>({variantId:i.variantId,quantity:i.quantity,unitPriceMinor:i.unitPriceMinor})).sort((a,b)=>a.variantId.localeCompare(b.variantId)))).digest('hex');

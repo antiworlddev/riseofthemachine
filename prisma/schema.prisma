@@ -40,6 +40,7 @@ model Event {
   registrationEnabled Boolean @default(false)
   settingsRevision Int @default(1)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
+  tableInventory TableInventory?
   tiers TicketTier[]
   orders Order[]
   competitions Competition[]
@@ -58,11 +59,16 @@ model TicketTier {
   sold Int @default(0)
   active Boolean @default(false)
   event Event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  parkingPerTable Int?
   lines OrderLine[]
   @@unique([eventId, code])
   @@unique([id, eventId])
 }
 model Order {
+  tableArrivedAt DateTime? @db.Timestamptz(3)
+  tableLabel String?
+  bookingNote String?
+  bookingRevision Int @default(1)
   operationsRevision Int @default(1)
   refund PaymentRefund?
   id String @id @default(uuid()) @db.Uuid
@@ -87,6 +93,8 @@ model Order {
   @@index([buyerSubject, createdAt])
 }
 model OrderLine {
+  parkingQuantity Int @default(0)
+  parkingPasses ParkingPass[]
   id String @id @default(uuid()) @db.Uuid
   orderId String @db.Uuid
   eventId String @db.Uuid
@@ -133,6 +141,7 @@ model StaffUser {
   email String @unique
   role String
   enabled Boolean @default(false)
+  parkingAdmissions ParkingAdmission[]
   admissions Admission[]
   auditLogs AuditLog[]
 }
@@ -288,6 +297,10 @@ model MerchVariant {
   @@unique([productId,label])
 }
 model MerchOrder {
+  shippingFeeMinor Int @default(0)
+  shippingRateId String? @db.Uuid
+  shippingSnapshot Json?
+  shippingRate ShippingRate? @relation(fields:[shippingRateId],references:[id],onDelete:Restrict)
   operationsRevision Int @default(1)
   refund PaymentRefund?
   id String @id @default(uuid()) @db.Uuid
@@ -362,4 +375,44 @@ model PaymentRefund {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
   order Order? @relation(fields:[orderId],references:[id],onDelete:Restrict)
   merchOrder MerchOrder? @relation(fields:[merchOrderId],references:[id],onDelete:Restrict)
+}
+
+model ShippingRate {
+  id String @id @default(uuid()) @db.Uuid
+  eventSlug String
+  state String
+  stateKey String
+  feeMinor Int
+  note String
+  enabled Boolean @default(false)
+  revision Int @default(1)
+  orders MerchOrder[]
+  @@unique([eventSlug,stateKey])
+}
+
+model TableInventory {
+  eventId String @id @db.Uuid
+  parkingCapacity Int @default(0)
+  parkingReserved Int @default(0)
+  parkingSold Int @default(0)
+  revision Int @default(1)
+  event Event @relation(fields:[eventId],references:[id],onDelete:Restrict)
+}
+model ParkingPass {
+  id String @id @default(uuid()) @db.Uuid
+  orderLineId String @db.Uuid
+  ordinal Int
+  tokenHash String @unique @db.VarChar(64)
+  encryptedToken String
+  status TicketStatus @default(ACTIVE)
+  line OrderLine @relation(fields:[orderLineId],references:[id],onDelete:Restrict)
+  admission ParkingAdmission?
+  @@unique([orderLineId,ordinal])
+}
+model ParkingAdmission {
+  passId String @id @db.Uuid
+  staffId String @db.Uuid
+  scannedAt DateTime @default(now()) @db.Timestamptz(3)
+  pass ParkingPass @relation(fields:[passId],references:[id],onDelete:Restrict)
+  staff StaffUser @relation(fields:[staffId],references:[id],onDelete:Restrict)
 }

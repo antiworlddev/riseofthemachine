@@ -4,7 +4,7 @@ This database foundation is now integrated with a Next.js application (see appli
 
 ## Confirmed scope
 
-One RISE OF THE MACHINE destination for the concert, KALA GAMES registration, and future album/merch sections. Concert date: 20 December 2026. KALA GAMES: 19 December 2026. Regular ₦20,000 and VIP ₦100,000 are confirmed. Table enquiries show ₦3m/₦5m/₦10m. Event times, actual ticket capacities, universities and roster sizes still require confirmation. Seed adds confirmed paid-tier prices with zero capacity and closed sales.
+One RISE OF THE MACHINE destination for the concert, KALA GAMES registration, and future album/merch sections. Concert date: 20 December 2026. KALA GAMES: 19 December 2026. Regular ₦20,000 and VIP ₦100,000 are confirmed. Table checkout categories are Engines ₦3m, Autobots ₦5m and Machineries ₦10m, with separately configured VIP parking allocations. Event times, actual ticket capacities, universities and roster sizes still require confirmation. Seed adds confirmed paid-tier prices with zero capacity and closed sales.
 
 KALA GAMES registration is free: there is no order/payment relation or registration charge. A TeamRegistration has exactly one Representative; the representative can submit multiple sport rosters under that team. teamKey is a server-assigned canonical university/team identity, not a browser-generated spelling, preventing spelling variants from creating duplicate registrations. University name is optional for non-university teams. One team per canonical key per event and one roster per team/competition. A representative may manage more than one team; this does not impose an unrequested one-team-per-person policy.
 

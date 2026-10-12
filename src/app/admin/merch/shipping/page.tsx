@@ -1,0 +1,3 @@
+import ShippingAdmin from './shipping-admin';
+export const metadata={title:'Delivery rates | RISE OF THE MACHINE',robots:{index:false,follow:false}};
+export default function Page(){return <div className="app-page"><section className="registration-page"><p className="eyebrow">Organizer access</p><h1>DELIVERY RATES<span className="red">.</span></h1><p><a href="/admin/merch">Merch operations</a> · <a href="/admin/merch/inventory">Inventory</a></p><p>Configure a flat delivery fee per order for each supported Nigerian state/FCT. Buyers pay this fee with their merchandise. No rates are assumed; only enabled destinations are offered.</p><ShippingAdmin/></section></div>;}

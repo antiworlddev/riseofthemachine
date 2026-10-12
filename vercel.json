@@ -2,15 +2,15 @@
   "crons": [
     {
       "path": "/api/jobs/ticket-emails",
-      "schedule": "0 8 * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/jobs/ticket-expiry",
-      "schedule": "0 7 * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/jobs/merch-expiry",
-      "schedule": "30 7 * * *"
+      "schedule": "* * * * *"
     }
   ],
   "$schema": "https://openapi.vercel.sh/vercel.json",

@@ -63,6 +63,8 @@ model TicketTier {
   @@unique([id, eventId])
 }
 model Order {
+  operationsRevision Int @default(1)
+  refund PaymentRefund?
   id String @id @default(uuid()) @db.Uuid
   eventId String @db.Uuid
   idempotencyKey String @unique
@@ -125,6 +127,7 @@ model Ticket {
   @@unique([orderLineId, ordinal])
 }
 model StaffUser {
+  refunds PaymentRefund[]
   id String @id @default(uuid()) @db.Uuid
   authSubject String @unique
   email String @unique
@@ -285,6 +288,8 @@ model MerchVariant {
   @@unique([productId,label])
 }
 model MerchOrder {
+  operationsRevision Int @default(1)
+  refund PaymentRefund?
   id String @id @default(uuid()) @db.Uuid
   eventSlug String
   idempotencyKey String @unique
@@ -336,4 +341,25 @@ model MerchPayment {
   status PaymentStatus @default(PENDING)
   verifiedAt DateTime? @db.Timestamptz(3)
   order MerchOrder @relation(fields:[orderId],references:[id],onDelete:Restrict)
+}
+
+model PaymentRefund {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String? @unique @db.Uuid
+  merchOrderId String? @unique @db.Uuid
+  reference String @unique
+  transactionId String @unique
+  domain String
+  amountMinor Int
+  currency String @default("NGN")
+  status String @default("INITIATING")
+  providerRefundId String? @unique
+  stockBasis String
+  reason String
+  requestedBy String @db.Uuid
+  requestedByStaff StaffUser @relation(fields:[requestedBy],references:[id],onDelete:Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  order Order? @relation(fields:[orderId],references:[id],onDelete:Restrict)
+  merchOrder MerchOrder? @relation(fields:[merchOrderId],references:[id],onDelete:Restrict)
 }

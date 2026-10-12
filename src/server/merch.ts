@@ -71,11 +71,12 @@ export async function verifyMerch(db:PrismaClient,reference:string,identity?:Ide
  const attempt=await db.merchPayment.findUnique({where:{reference},include:{order:true}});
  if(!attempt||attempt.order.eventSlug!==concertSlug()||identity&&attempt.order.buyerSubject!==identity.subject)throw new AppError(404,'ORDER_NOT_FOUND','Order not found.');
  if(attempt.domain!==gateway.domain)throw new AppError(409,'PAYMENT_MODE_CHANGED','Payment environment changed.');
+ if(attempt.order.status==='REFUNDED')return {status:'REFUNDED',needsReconciliation:false};
  if(attempt.order.status==='PAID')return {status:'PAID',needsReconciliation:attempt.order.needsReconciliation};
  const data=await gateway.verify(reference);if(data.status!=='success')return {status:attempt.order.status,needsReconciliation:attempt.order.needsReconciliation};
  return db.$transaction(async tx=>{
   await tx.$queryRaw`SELECT id FROM "MerchOrder" WHERE id=${attempt.orderId}::uuid FOR UPDATE`;
-  const order=await tx.merchOrder.findUniqueOrThrow({where:{id:attempt.orderId},include:{lines:true}});if(order.status==='PAID')return {status:'PAID',needsReconciliation:order.needsReconciliation};
+  const order=await tx.merchOrder.findUniqueOrThrow({where:{id:attempt.orderId},include:{lines:true}});if(order.status==='REFUNDED')return {status:'REFUNDED',needsReconciliation:false};if(order.status==='PAID')return {status:'PAID',needsReconciliation:order.needsReconciliation};
   const paidAt=data.paid_at?new Date(data.paid_at):null;
   if(data.reference!==reference||data.amount!==order.totalMinor||data.currency!=='NGN'||data.domain!==attempt.domain||data.customer.email.trim().toLowerCase()!==order.buyerEmail||!paidAt||!Number.isFinite(paidAt.getTime())||paidAt.getTime()>Date.now()+60000){
    await tx.merchOrder.update({where:{id:order.id},data:{needsReconciliation:true}});if(!order.needsReconciliation)await tx.auditLog.create({data:{action:'MERCH_PAYMENT_MISMATCH',entityType:'MerchOrder',entityId:order.id}});return {status:order.status,needsReconciliation:true};
@@ -90,7 +91,7 @@ export async function verifyMerch(db:PrismaClient,reference:string,identity?:Ide
   await tx.auditLog.create({data:{action:'MERCH_ORDER_PAID',entityType:'MerchOrder',entityId:order.id}});return {status:'PAID',needsReconciliation:false};
  },options);
 }
-const publicSelect={id:true,buyerName:true,phone:true,fulfilment:true,address:true,deliveryTerms:true,status:true,totalMinor:true,createdAt:true,expiresAt:true,needsReconciliation:true,fulfilmentStatus:true,trackingNote:true,revision:true,lines:{select:{productName:true,variantLabel:true,quantity:true,unitPriceMinor:true}},payments:{select:{reference:true,domain:true,status:true,authorizationUrl:true}}} satisfies Prisma.MerchOrderSelect;
+const publicSelect={refund:{select:{status:true,amountMinor:true,currency:true}},id:true,buyerName:true,phone:true,fulfilment:true,address:true,deliveryTerms:true,status:true,totalMinor:true,createdAt:true,expiresAt:true,needsReconciliation:true,fulfilmentStatus:true,trackingNote:true,revision:true,lines:{select:{productName:true,variantLabel:true,quantity:true,unitPriceMinor:true}},payments:{select:{reference:true,domain:true,status:true,authorizationUrl:true}}} satisfies Prisma.MerchOrderSelect;
 export async function myMerchOrders(db:PrismaClient,identity:Identity){const orders=await db.merchOrder.findMany({where:{buyerSubject:identity.subject,eventSlug:concertSlug()},orderBy:{createdAt:'desc'},take:50,select:publicSelect});return orders.map(o=>({...o,payments:o.payments.map(p=>({...p,authorizationUrl:o.status==='RESERVED'&&o.expiresAt>new Date()&&!o.needsReconciliation?p.authorizationUrl:null}))}));}
 export async function adminMerchOrders(db:PrismaClient,identity:Identity,mode:'test'|'live',before?:string){await requireAdmin(db,identity);const found=await db.merchOrder.findMany({where:{eventSlug:concertSlug(),payments:{some:{domain:mode}},...(before?{id:{lt:before}}:{})},orderBy:{id:'desc'},take:51,select:{...publicSelect,buyerEmail:true,payments:{select:{reference:true,domain:true,status:true}}}});return {orders:found.slice(0,50),nextCursor:found.length>50?found[49].id:null};}
 export async function updateMerchFulfilment(db:PrismaClient,identity:Identity,id:string,input:z.infer<typeof fulfilmentInput>){

@@ -11,7 +11,7 @@
 
 ## Next implementation work
 
-1. Audited payment reconciliation, cancellation/refund operations and ticket void/merch stock handling tied to confirmed provider outcomes. Partial refunds require explicit data-model work.
+1. Full-payment refund and late-payment reconciliation implementation is complete; hosted acceptance remains. Unpaid cancellation, partial refunds and fulfilled-goods returns remain separate work.
 2. Merch confirmation/fulfilment emails and KALA submission/review notifications.
 3. Email failure visibility and controlled retry/resend support.
 4. Merch catalogue editing (names, prices, descriptions, assets, variants) and order search/status filters/summaries/exports.
@@ -29,10 +29,10 @@
 - Confirm ticket allocations, merch artwork/size information/stock, delivery arrangements and pickup instructions.
 - Provide support contacts and approved privacy/refund policies; replace album/content placeholders.
 
-## Scope decisions before expanding
+## Approved expansion scope
 
-- KALA: additional sports on existing registrations, representative transfers, eligibility requirements; fixtures/draw/results/standings if desired.
-- Tables: retain enquiry flow or add organizer booking management.
-- Delivery: optional structured fee quotes/settlement tracking or automated shipping payments; current separately quoted fee stays outside checkout.
+- KALA: additional sports on existing registrations, representative transfers, configurable eligibility, fixtures/draws/results/standings — approved.
+- Tables: organizer booking management and VIP parking for table buyers — approved.
+- Delivery: automated shipping fee payments — approved. Until that update ships, the current separate-quote flow remains. See approved-expansion.md for configuration requirements and sequence.
 
-Current automated result: 96 unit/database/integration tests plus browser checks on 10 routes at four widths. This does not substitute for hosted/native database or physical device acceptance.
+Current automated result: 115 unit/database/integration tests. Design checks covered ten routes at four widths; the new payment-support page was separately tested at four widths, including refund preview/confirmation and provider status lookup. This does not substitute for hosted/native database or physical device acceptance.

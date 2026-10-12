@@ -1,3 +1,4 @@
+import {syncRefundReference} from '@/server/payment-operations';
 import {verifyMerch,merchReference} from '@/server/merch';
 import {z} from 'zod';
 import {db} from '@/server/db';
@@ -13,5 +14,6 @@ export function POST(request:Request){return route(async()=>{
  let value;try{value=JSON.parse(body.toString('utf8'));}catch{throw new AppError(400,'INVALID_WEBHOOK','Invalid webhook body.');}
  const event=z.object({event:z.string(),data:z.unknown()}).safeParse(value);if(!event.success)throw new AppError(400,'INVALID_WEBHOOK','Invalid webhook event.');
  if(event.data.event==='charge.success'){const input=referenceInput.safeParse({reference:z.object({reference:z.string()}).safeParse(event.data.data).data?.reference});const merchandise=merchReference.safeParse({reference:z.object({reference:z.string()}).safeParse(event.data.data).data?.reference});if(input.success||merchandise.success){try{if(merchandise.success)await verifyMerch(db(),merchandise.data.reference);else if(input.success)await verifyPayment(db(),input.data.reference);}catch(e){if(!(e instanceof AppError&&e.code==='ORDER_NOT_FOUND'))throw e;}}}
+ if(['refund.pending','refund.processing','refund.needs-attention','refund.failed','refund.processed'].includes(event.data.event)){const reference=z.object({transaction_reference:z.string().regex(/^(rotm|merch)-[a-f0-9]{32}$/)}).safeParse(event.data.data);if(reference.success)await syncRefundReference(db(),reference.data.transaction_reference);}
  return json({received:true});
 });}

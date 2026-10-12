@@ -67,14 +67,15 @@ export async function verifyPayment(db:PrismaClient,reference:string,identity?:I
  const attempt=await db.paymentAttempt.findUnique({where:{reference},include:{order:true}});
  if(!attempt||attempt.order.eventId!==(await db.event.findUnique({where:{slug:concertSlug()},select:{id:true}}))?.id||(identity&&attempt.order.buyerSubject!==identity.subject))throw new AppError(404,'ORDER_NOT_FOUND','Order not found.');
  if(attempt.domain!==gateway.domain)throw new AppError(409,'PAYMENT_MODE_CHANGED','Payment environment does not match this order.');
- if(attempt.order.status==='PAID')return {orderId:attempt.orderId,status:'PAID',needsReconciliation:false};
+ if(attempt.order.status==='REFUNDED')return {orderId:attempt.orderId,status:'REFUNDED',needsReconciliation:false};
+ if(attempt.order.status==='PAID')return {orderId:attempt.orderId,status:'PAID',needsReconciliation:attempt.order.needsReconciliation};
  const data=await gateway.verify(reference);
  if(data.status!=='success')return {orderId:attempt.orderId,status:attempt.order.status,needsReconciliation:attempt.order.needsReconciliation,paymentStatus:data.status};
  requireTicketKey();
  return db.$transaction(async tx=>{
   await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${attempt.orderId}::uuid FOR UPDATE`;
   const order=await tx.order.findUniqueOrThrow({where:{id:attempt.orderId},include:{lines:true}});
-  if(order.status==='PAID')return {orderId:order.id,status:'PAID',needsReconciliation:false};
+  if(order.status==='REFUNDED')return {orderId:order.id,status:'REFUNDED',needsReconciliation:false};if(order.status==='PAID')return {orderId:order.id,status:'PAID',needsReconciliation:order.needsReconciliation};
   const paidAt=data.paid_at?new Date(data.paid_at):null;
   const mismatch=data.reference!==reference||data.amount!==order.totalMinor||data.currency!==order.currency||data.domain!==attempt.domain||data.customer.email.trim().toLowerCase()!==order.buyerEmail||!paidAt||!Number.isFinite(paidAt.getTime())||paidAt.getTime()>Date.now()+60000;
   if(mismatch){await tx.order.update({where:{id:order.id},data:{needsReconciliation:true}});if(!order.needsReconciliation)await tx.auditLog.create({data:{action:'PAYMENT_MISMATCH',entityType:'Order',entityId:order.id}});return {orderId:order.id,status:order.status,needsReconciliation:true};}
@@ -95,11 +96,11 @@ export async function verifyPayment(db:PrismaClient,reference:string,identity?:I
    for(let ordinal=1;ordinal<=line.quantity;ordinal++){const token=randomBytes(32).toString('base64url'),id=randomUUID();await tx.ticket.create({data:{id,orderLineId:line.id,ordinal,tokenHash:hashTicket(token),encryptedToken:encryptTicket(token,id)}});}
   }
   await tx.outboxMessage.create({data:{deduplicationKey:`tickets:${order.id}`,kind:'TICKETS_ISSUED',payload:{orderId:order.id}}});
-  await tx.auditLog.create({data:{action:'ORDER_PAID',entityType:'Order',entityId:order.id,metadata:{paymentAttemptId:attempt.id}}});return {orderId:order.id,status:'PAID',needsReconciliation:false};
+  await tx.auditLog.create({data:{action:'ORDER_PAID',entityType:'Order',entityId:order.id,metadata:{paymentAttemptId:attempt.id}}});return {orderId:order.id,status:'PAID',needsReconciliation:order.needsReconciliation};
  },txOptions);
 }
 export async function myOrders(db:PrismaClient,identity:Identity){
- const orders=await db.order.findMany({where:{buyerSubject:identity.subject,event:{slug:concertSlug()}},orderBy:{createdAt:'desc'},take:50,select:{id:true,status:true,needsReconciliation:true,totalMinor:true,currency:true,expiresAt:true,createdAt:true,lines:{select:{quantity:true,unitPriceMinor:true,tier:{select:{name:true}},tickets:{select:{id:true,ordinal:true,status:true,encryptedToken:true},orderBy:{ordinal:'asc'}}}},payments:{select:{reference:true,authorizationUrl:true,status:true,domain:true}}}});
+ const orders=await db.order.findMany({where:{buyerSubject:identity.subject,event:{slug:concertSlug()}},orderBy:{createdAt:'desc'},take:50,select:{id:true,status:true,needsReconciliation:true,totalMinor:true,currency:true,expiresAt:true,createdAt:true,refund:{select:{status:true,amountMinor:true,currency:true}},lines:{select:{quantity:true,unitPriceMinor:true,tier:{select:{name:true}},tickets:{select:{id:true,ordinal:true,status:true,encryptedToken:true},orderBy:{ordinal:'asc'}}}},payments:{select:{reference:true,authorizationUrl:true,status:true,domain:true}}}});
  const emails=await emailStatuses(db,orders.map(o=>o.id));
  return orders.map(order=>({...order,emailDelivery:emails.get(order.id)??null,payments:order.payments.map(p=>({...p,authorizationUrl:order.status==='RESERVED'&&order.expiresAt.getTime()>Date.now()?p.authorizationUrl:null})),lines:order.lines.map(line=>({...line,tickets:line.tickets.map(t=>({id:t.id,ordinal:t.ordinal,status:t.status,code:order.status==='PAID'&&t.status==='ACTIVE'&&t.encryptedToken?decryptTicket(t.encryptedToken,t.id):null}))}))}));
 }

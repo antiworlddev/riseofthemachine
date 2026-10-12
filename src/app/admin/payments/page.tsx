@@ -1,0 +1,3 @@
+import PaymentSupport from './payment-support';
+export const metadata={title:'Payment support | RISE OF THE MACHINE',robots:{index:false,follow:false}};
+export default function Page(){return <div className="app-page"><section className="registration-page"><p className="eyebrow">Organizer access</p><h1>PAYMENT SUPPORT<span className="red">.</span></h1><p><a href="/admin/tickets">Ticket operations</a> · <a href="/admin/merch">Merch operations</a></p><p>Review late payments, accept eligible orders against available stock, or request a full verified-payment refund. Used tickets and dispatched/collected merchandise require a separate support review.</p><PaymentSupport/></section></div>;}

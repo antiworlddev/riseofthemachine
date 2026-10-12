@@ -49,3 +49,9 @@ The worker encrypts the exact rendered email before its first attempt and preser
 For a blocked message, inspect lastErrorCode and the order/payment status using trusted database tooling; check Resend using the provider ID or idempotency key ticket-email:<outbox-id> before any manual resend. Do not blindly clear firstAttemptAt, delete the outbox entry or regenerate its key: an earlier uncertain request may have sent successfully. There is no browser resend button in this release. Retain TICKET_TOKEN_KEY while encrypted tickets or pending email snapshots exist.
 
 Provider references: https://resend.com/docs/api-reference/emails/send-email and https://resend.com/docs/dashboard/emails/idempotency-keys.
+
+For Vercel hosting and the protected HTTP scheduler endpoint, see [vercel-deployment.md](vercel-deployment.md).
+
+## Scheduled batch update
+
+The scheduled route now defaults to ten messages per invocation, capped by TICKET_EMAIL_BATCH_SIZE (1–25), and stops starting new messages after a cooperative 35-second budget. CLI calls still default to ten. Existing leases, encrypted snapshots, attempt limits and provider idempotency keys are retained. See vercel-deployment.md for daily/pro schedule configuration and backlog limitations.

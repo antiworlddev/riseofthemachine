@@ -252,3 +252,88 @@ model ApiRateBucket {
   expiresAt DateTime @db.Timestamptz(3)
   @@index([expiresAt])
 }
+
+enum MerchFulfilment {
+  PICKUP
+  DELIVERY
+}
+enum MerchFulfilmentStatus {
+  PENDING
+  READY
+  DISPATCHED
+  COMPLETED
+}
+model MerchProduct {
+  id String @id @default(uuid()) @db.Uuid
+  slug String @unique
+  name String
+  kind String
+  description String
+  priceMinor Int
+  active Boolean @default(false)
+  variants MerchVariant[]
+}
+model MerchVariant {
+  id String @id @default(uuid()) @db.Uuid
+  productId String @db.Uuid
+  label String
+  capacity Int @default(0)
+  reserved Int @default(0)
+  sold Int @default(0)
+  product MerchProduct @relation(fields:[productId],references:[id],onDelete:Restrict)
+  lines MerchOrderLine[]
+  @@unique([productId,label])
+}
+model MerchOrder {
+  id String @id @default(uuid()) @db.Uuid
+  eventSlug String
+  idempotencyKey String @unique
+  requestHash String
+  buyerSubject String
+  buyerName String
+  buyerEmail String
+  phone String
+  fulfilment MerchFulfilment
+  address Json?
+  deliveryTerms String?
+  status OrderStatus @default(RESERVED)
+  needsReconciliation Boolean @default(false)
+  totalMinor Int
+  currency String @default("NGN")
+  expiresAt DateTime @db.Timestamptz(3)
+  paidAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  fulfilmentStatus MerchFulfilmentStatus @default(PENDING)
+  revision Int @default(1)
+  trackingNote String?
+  lines MerchOrderLine[]
+  payments MerchPayment[]
+  @@index([buyerSubject,createdAt])
+  @@index([status,expiresAt])
+}
+model MerchOrderLine {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  variantId String @db.Uuid
+  productName String
+  variantLabel String
+  quantity Int
+  unitPriceMinor Int
+  order MerchOrder @relation(fields:[orderId],references:[id],onDelete:Restrict)
+  variant MerchVariant @relation(fields:[variantId],references:[id],onDelete:Restrict)
+  @@unique([orderId,variantId])
+}
+model MerchPayment {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @unique @db.Uuid
+  reference String @unique
+  authorizationUrl String?
+  initializingAt DateTime? @db.Timestamptz(3)
+  domain String
+  providerTransactionId String? @unique
+  amountMinor Int
+  currency String
+  status PaymentStatus @default(PENDING)
+  verifiedAt DateTime? @db.Timestamptz(3)
+  order MerchOrder @relation(fields:[orderId],references:[id],onDelete:Restrict)
+}

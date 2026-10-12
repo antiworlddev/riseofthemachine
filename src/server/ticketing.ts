@@ -57,9 +57,10 @@ async function release(tx:Prisma.TransactionClient,order:{id:string;lines:{tierI
  await tx.order.update({where:{id:order.id},data:{status}});
  await tx.auditLog.create({data:{action:`ORDER_${status}`,entityType:'Order',entityId:order.id}});
 }
-export async function expireReservations(db:PrismaClient){
- const expired=await db.order.findMany({where:{status:'RESERVED',expiresAt:{lte:new Date()}},select:{id:true},orderBy:{expiresAt:'asc'},take:100});let count=0;
- for(const item of expired)count+=await db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${item.id}::uuid FOR UPDATE`;const order=await tx.order.findUniqueOrThrow({where:{id:item.id},include:{lines:true}});if(order.status!=='RESERVED'||order.expiresAt.getTime()>Date.now())return 0;await release(tx,order,'EXPIRED');return 1;},txOptions);
+export async function expireReservations(db:PrismaClient,limit=100,deadlineAt=Infinity){
+ if(Date.now()>=deadlineAt)return 0;
+ const expired=await db.order.findMany({where:{event:{slug:concertSlug()},status:'RESERVED',expiresAt:{lte:new Date()}},select:{id:true},orderBy:{expiresAt:'asc'},take:Math.min(100,Math.max(1,limit))});let count=0;
+ for(const item of expired){if(Date.now()>=deadlineAt)break;count+=await db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "Order" WHERE id=${item.id}::uuid FOR UPDATE`;const order=await tx.order.findUniqueOrThrow({where:{id:item.id},include:{lines:true}});if(order.status!=='RESERVED'||order.expiresAt.getTime()>Date.now())return 0;await release(tx,order,'EXPIRED');return 1;},txOptions);}
  return count;
 }
 export async function verifyPayment(db:PrismaClient,reference:string,identity?:Identity,gateway:Gateway=paystackGateway()){
@@ -77,6 +78,8 @@ export async function verifyPayment(db:PrismaClient,reference:string,identity?:I
   const paidAt=data.paid_at?new Date(data.paid_at):null;
   const mismatch=data.reference!==reference||data.amount!==order.totalMinor||data.currency!==order.currency||data.domain!==attempt.domain||data.customer.email.trim().toLowerCase()!==order.buyerEmail||!paidAt||!Number.isFinite(paidAt.getTime())||paidAt.getTime()>Date.now()+60000;
   if(mismatch){await tx.order.update({where:{id:order.id},data:{needsReconciliation:true}});if(!order.needsReconciliation)await tx.auditLog.create({data:{action:'PAYMENT_MISMATCH',entityType:'Order',entityId:order.id}});return {orderId:order.id,status:order.status,needsReconciliation:true};}
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`provider:${String(data.id)}`}))::text`;
+  if(await tx.merchPayment.findUnique({where:{providerTransactionId:String(data.id)}}))throw new AppError(409,'PAYMENT_ALREADY_USED','This payment is already linked to another order.');
   const prior=await tx.paymentAttempt.findUnique({where:{providerTransactionId:String(data.id)}});if(prior&&prior.id!==attempt.id)throw new AppError(409,'PAYMENT_ALREADY_USED','This payment is already linked to another order.');
   await tx.paymentAttempt.update({where:{id:attempt.id},data:{status:'VERIFIED',verifiedAt:new Date(),providerTransactionId:String(data.id)}});
   if(order.needsReconciliation||order.status!=='RESERVED'||order.expiresAt.getTime()<=Date.now()||paidAt!.getTime()>order.expiresAt.getTime()){

@@ -24,9 +24,10 @@ export async function emailStatuses(db:PrismaClient,ids:string[]){
  const messages=await db.outboxMessage.findMany({where:{deduplicationKey:{in:ids.map(id=>`tickets:${id}`)}},select:{deduplicationKey:true,deliveredAt:true,attempts:true,blocked:true,lastErrorCode:true}});
  return new Map(messages.map(m=>[m.deduplicationKey.slice(8),{status:m.deliveredAt?'SENT':m.blocked?'NEEDS_ATTENTION':m.attempts?'RETRYING':'QUEUED',attempts:m.attempts,sentAt:m.deliveredAt}]));
 }
-export async function deliverTicketEmails(db:PrismaClient,gateway:EmailGateway=resendGateway,limit=10){
+export async function deliverTicketEmails(db:PrismaClient,gateway:EmailGateway=resendGateway,limit=10,deadlineAt=Infinity){
  const config=configuration(),result={sent:0,retrying:0,blocked:0};
  for(let i=0;i<Math.min(50,Math.max(1,limit));i++){
+  if(Date.now()>=deadlineAt)break;
   const lease=randomUUID();
   const message=await db.$transaction(async tx=>{
    const rows=await tx.$queryRaw<{id:string}[]>`SELECT m.id FROM "OutboxMessage" m JOIN "Order" o ON o.id::text=m.payload->>'orderId' JOIN "Event" e ON e.id=o."eventId" WHERE m.kind='TICKETS_ISSUED' AND m."deliveredAt" IS NULL AND NOT m.blocked AND m."nextAttemptAt"<=now() AND (m."lockedUntil" IS NULL OR m."lockedUntil"<now()) AND e.slug=${concertSlug()} AND EXISTS (SELECT 1 FROM "PaymentAttempt" p WHERE p."orderId"=o.id AND p.domain=${config.mode} AND p.status='VERIFIED') ORDER BY m."createdAt" LIMIT 1 FOR UPDATE OF m SKIP LOCKED`;

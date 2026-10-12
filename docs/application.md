@@ -44,7 +44,7 @@ DB-backed account quota permits 60 authenticated registration API requests/minut
 
 `npm test` covers migrations, invalid database writes, strict request validation and encrypted sessions. `npm run test:integration` requires TEST_DATABASE_URL for a disposable PostgreSQL database; it creates a random isolated schema, runs the actual Prisma migration runner, tests service transactions and drops only that schema. The GitHub workflow provides PostgreSQL 17 and runs these tests plus TypeScript and production build checks. Do not point tests at a production database.
 
-Before launch: real-provider sign-in acceptance, native PostgreSQL CI execution, browser/device QA with approved mockups, admin review/eligibility workflows, monitoring, backups and privacy/retention policy. Concert checkout and reservation handlers are now implemented (see ticketing.md). Scanner UI and ticket email delivery are implemented; refunds and merch sales remain separate work. No live database or payment provider has been configured.
+Before launch: real-provider sign-in acceptance, native PostgreSQL CI execution, browser/device QA with approved mockups, admin review/eligibility workflows, monitoring, backups and privacy/retention policy. Concert checkout and reservation handlers are now implemented (see ticketing.md). Scanner UI and ticket email delivery are implemented; merch sales are implemented (see merch.md); refunds remain separate work. No live database or payment provider has been configured.
 
 ## Dependency compatibility
 

@@ -1,3 +1,11 @@
+import {queueOrderNotification,deliverNotifications,queueNotification,deliverEmails} from '../../src/server/notifications';
+import {emailOverview,operateEmail,emailFilters} from '../../src/server/email-operations';
+import {adminCatalog,saveCatalog,catalogInput} from '../../src/server/merch-catalog-admin';
+import {merchOrderOverview,merchOrderFilters,exportMerchOrders,csvCell} from '../../src/server/merch-order-tools';
+import {staffOverview,lookupStaffAccount,changeStaffAccess,auditHistory,auditDetails,staffChangeInput,auditFilters} from '../../src/server/staff-management';
+import {operateTournament,tournamentOverview,publishedTournaments} from '../../src/server/tournaments';
+import {configureEligibility,eligibilitySettings,eligibilityHistory} from '../../src/server/eligibility';
+import {addTeamSports,saveRepresentativeProfile,representativeProfile,lookupRepresentative,transferTeam,organizerTeams} from '../../src/server/kala-teams';
 import {configureTables,assignTable,tableOverview} from '../../src/server/tables';
 import {checkParking} from '../../src/server/parking';
 import {tablePackages} from '../../src/server/table-stock';
@@ -753,6 +761,358 @@ test('registration transactions, ownership and race handling',async t=>{
     assert.equal((await settings.PATCH(new Request('http://localhost:3000/api/admin/tables/settings',{method:'PATCH',headers:{cookie,origin:'https://attacker.example','content-type':'application/json'},body:JSON.stringify(config)}))).status,403);
     assert.equal((await scan.POST(new Request('http://localhost:3000/api/parking/admit',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:JSON.stringify({token:'a'.repeat(43)})}))).status,400);
    });
+  });
+  await t.test('additional KALA sports and verified representative transfers',async t=>{
+   process.env.KALA_EVENT_SLUG='kala-expansion-test';process.env.KALA_REGISTRATION_ENABLED='true';
+   const event=await db.event.create({data:{slug:process.env.KALA_EVENT_SLUG,name:'KALA expansion',dateLocal:'2026-12-19',registrationEnabled:true}});
+   const option=await db.teamOption.create({data:{eventId:event.id,key:'expansion-team',name:'Expansion Team',enabled:true}});
+   for(const sportCode of ['football','basketball','volleyball','handball'])await db.competition.create({data:{eventId:event.id,sportCode,minPlayers:1,maxPlayers:3,registrationEnabled:sportCode!=='handball'}});
+   const old={subject:'kala-old-rep',email:'old-kala@example.com'},next={subject:'kala-new-rep',email:'new-kala@example.com'};
+   const team=await createTeam(db,old,{teamOptionId:option.id,sportCodes:['football'],representative:{name:'Old Representative',phone:'+2348000000000'}});
+   await saveRoster(db,old,team.rosters[0].id,{revision:1,members:[player]});await submitRoster(db,old,team.rosters[0].id,2);await reviewRoster(db,owner,team.rosters[0].id,{revision:3,decision:'APPROVED',note:'Approved original roster'});
+   const approved=await db.sportRoster.findUniqueOrThrow({where:{id:team.rosters[0].id},include:{members:true}});
+   const otherOption=await db.teamOption.create({data:{eventId:event.id,key:'second-expansion-team',name:'Other Team',enabled:true}});
+   const otherTeam=await createTeam(db,old,{teamOptionId:otherOption.id,sportCodes:['football'],representative:{name:'Old Representative',phone:'+2348000000000'}});
+   const foreignEvent=await db.event.create({data:{slug:'foreign-kala-expansion',name:'Foreign KALA',dateLocal:'2026-12-19'}});
+   const foreignOption=await db.teamOption.create({data:{eventId:foreignEvent.id,key:'foreign-expansion',name:'Foreign Team'}});
+   const oldProfile=await db.representative.findUniqueOrThrow({where:{authSubject:old.subject}});
+   const foreignTeam=await db.teamRegistration.create({data:{eventId:foreignEvent.id,representativeId:oldProfile.id,teamKey:foreignOption.key,teamName:foreignOption.name}});
+
+   await t.test('only the current representative adds open sports, without touching approved rosters or creating payments',async()=>{
+    const count=await db.order.count();await assert.rejects(()=>addTeamSports(db,outsider,team.id,{revision:1,sportCodes:['basketball']}),e=>e instanceof AppError&&e.status===404);
+    await assert.rejects(()=>addTeamSports(db,old,team.id,{revision:1,sportCodes:['handball']}),e=>e instanceof AppError&&e.code==='SPORT_CLOSED');
+    await assert.rejects(()=>addTeamSports(db,old,team.id,{revision:1,sportCodes:['football']}),e=>e instanceof AppError&&e.code==='SPORT_ALREADY_ADDED');
+    await addTeamSports(db,old,team.id,{revision:1,sportCodes:['basketball']});
+    assert.deepEqual(await db.sportRoster.findUniqueOrThrow({where:{id:approved.id},include:{members:true}}),approved);assert.equal(await db.order.count(),count);
+    const changed=(await myTeams(db,old))[0];assert.equal(changed.ownershipRevision,2);assert.equal(changed.rosters.find(r=>r.competition.sportCode==='basketball')!.status,'DRAFT');
+   });
+   await t.test('concurrent additions have one revision winner; closure and foreign teams block writes',async()=>{
+    const attempts=await Promise.allSettled([addTeamSports(db,old,team.id,{revision:2,sportCodes:['volleyball']}),addTeamSports(db,old,team.id,{revision:2,sportCodes:['volleyball']})]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
+    await assert.rejects(()=>addTeamSports(db,old,foreignTeam.id,{revision:1,sportCodes:['basketball']}),e=>e instanceof AppError&&e.code==='TEAM_NOT_FOUND');
+    await db.event.update({where:{id:event.id},data:{registrationEnabled:false}});await assert.rejects(()=>addTeamSports(db,old,team.id,{revision:3,sportCodes:['handball']}),e=>e instanceof AppError&&e.code==='REGISTRATION_CLOSED');await db.event.update({where:{id:event.id},data:{registrationEnabled:true}});
+    await db.teamOption.update({where:{id:option.id},data:{enabled:false}});await assert.rejects(()=>addTeamSports(db,old,team.id,{revision:3,sportCodes:['handball']}),e=>e instanceof AppError&&e.code==='TEAM_CLOSED');await db.teamOption.update({where:{id:option.id},data:{enabled:true}});
+   });
+   await t.test('new account profile is identity-bound, private and needed for exact organizer lookup',async()=>{
+    await assert.rejects(()=>lookupRepresentative(db,outsider,next.email),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>lookupRepresentative(db,owner,next.email),e=>e instanceof AppError&&e.status===404);
+    assert.equal(await representativeProfile(db,next),null);await saveRepresentativeProfile(db,next,{name:'New Representative',phone:'+2348000000001'});assert.equal((await representativeProfile(db,next))!.email,next.email);assert.equal((await lookupRepresentative(db,owner,next.email.toUpperCase())).email,next.email);
+    assert.equal((await myTeams(db,next)).length,0);
+   });
+   const target=await lookupRepresentative(db,owner,next.email);let current=await db.teamRegistration.findUniqueOrThrow({where:{id:team.id}});
+   const transfer={teamId:team.id,revision:current.ownershipRevision,currentRepresentativeId:current.representativeId,newRepresentativeId:target.id,newEmail:target.email,reason:'Organizer confirmed replacement',confirmed:true as const};
+   await t.test('transfers reject nonadmins, stale previews, unknown accounts and self-transfers',async()=>{
+    await assert.rejects(()=>transferTeam(db,owner,{...transfer,teamId:foreignTeam.id,revision:1}),e=>e instanceof AppError&&e.code==='TEAM_NOT_FOUND');
+    await assert.rejects(()=>transferTeam(db,outsider,transfer),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>transferTeam(db,owner,{...transfer,revision:1}),e=>e instanceof AppError&&e.code==='STALE_REVISION');
+    await assert.rejects(()=>transferTeam(db,owner,{...transfer,newEmail:'other@example.com'}),e=>e instanceof AppError&&e.code==='TARGET_CHANGED');
+    await assert.rejects(()=>transferTeam(db,owner,{...transfer,newRepresentativeId:randomUUID()}),e=>e instanceof AppError&&e.code==='TARGET_CHANGED');
+    const unverified=await db.representative.create({data:{authSubject:'unverified-transfer',email:'unverified@example.com',name:'Unverified',phone:'+2348000000002'}});
+    await assert.rejects(()=>transferTeam(db,owner,{...transfer,newRepresentativeId:unverified.id,newEmail:unverified.email}),e=>e instanceof AppError&&e.code==='TARGET_CHANGED');
+    await assert.rejects(()=>transferTeam(db,owner,{...transfer,newRepresentativeId:current.representativeId}),e=>e instanceof AppError&&e.code==='SAME_REPRESENTATIVE');
+    assert.equal((await db.teamRegistration.findUniqueOrThrow({where:{id:team.id}})).representativeId,current.representativeId);
+   });
+   await t.test('closed-registration transfers have one winner, retain approvals and members and remove old account access',async()=>{
+    await db.event.update({where:{id:event.id},data:{registrationEnabled:false}});const attempts=await Promise.allSettled([transferTeam(db,owner,transfer),transferTeam(db,owner,transfer)]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
+    assert.deepEqual((await myTeams(db,old)).map(t=>t.id),[otherTeam.id]);const moved=(await myTeams(db,next))[0];assert.equal(moved.id,team.id);assert.equal(moved.ownershipRevision,4);
+    const original=moved.rosters.find(r=>r.id===approved.id)!;assert.equal(original.status,'APPROVED');assert.equal(original.reviewNote,'Approved original roster');assert.equal(original.members[0].fullName,player.fullName);assert.equal(original.revision,approved.revision+1);
+    assert.equal(await db.auditLog.count({where:{entityId:team.id,action:'TEAM_REPRESENTATIVE_TRANSFERRED'}}),1);const listing=await organizerTeams(db,owner);assert.equal(listing.history[0].actor!.email,owner.email);assert.ok(!JSON.stringify(listing).includes('authSubject'));
+    await db.event.update({where:{id:event.id},data:{registrationEnabled:true}});
+   });
+   await t.test('old sessions cannot save, submit or add sports after transfer, and approved rosters stay locked',async()=>{
+    const moved=(await myTeams(db,next))[0],draft=moved.rosters.find(r=>r.competition.sportCode==='basketball')!;
+    await assert.rejects(()=>saveRoster(db,old,draft.id,{revision:draft.revision,members:[player]}),e=>e instanceof AppError&&e.status===404);await assert.rejects(()=>submitRoster(db,old,draft.id,draft.revision),e=>e instanceof AppError&&e.status===404);
+    await assert.rejects(()=>addTeamSports(db,old,team.id,{revision:moved.ownershipRevision,sportCodes:['handball']}),e=>e instanceof AppError&&e.status===404);
+    await assert.rejects(()=>saveRoster(db,next,approved.id,{revision:approved.revision+1,members:[player]}),e=>e instanceof AppError&&e.code==='ROSTER_LOCKED');
+    await assert.rejects(()=>saveRoster(db,next,draft.id,{revision:draft.revision-1,members:[player]}),e=>e instanceof AppError&&e.code==='STALE_REVISION');await saveRoster(db,next,draft.id,{revision:draft.revision,members:[player]});
+   });
+   await t.test('ownership transfer and old-account save serialize without allowing a save after transfer',async()=>{
+    const back=await lookupRepresentative(db,owner,old.email);current=await db.teamRegistration.findUniqueOrThrow({where:{id:team.id}});const draft=(await myTeams(db,next))[0].rosters.find(r=>r.competition.sportCode==='volleyball')!;
+    const outcomes=await Promise.allSettled([transferTeam(db,owner,{...transfer,revision:current.ownershipRevision,currentRepresentativeId:target.id,newRepresentativeId:back.id,newEmail:back.email}),saveRoster(db,next,draft.id,{revision:draft.revision,members:[player]})]);assert.equal(outcomes[0].status,'fulfilled');
+    const after=await db.sportRoster.findUniqueOrThrow({where:{id:draft.id}});await assert.rejects(()=>saveRoster(db,next,draft.id,{revision:after.revision,members:[player]}),e=>e instanceof AppError&&e.status===404);assert.equal((await myTeams(db,old)).length,2);
+   });
+   await t.test('profile, sports and transfer APIs enforce sessions, origin and nonforgeable identity',async()=>{
+    const profile=await import('../../src/app/api/kala/representative/route'),transferApi=await import('../../src/app/api/admin/kala/teams/transfer/route'),sportsApi=await import('../../src/app/api/kala/teams/[id]/sports/route');
+    assert.equal((await profile.GET(new Request('http://localhost:3000/api/kala/representative'))).status,401);const cookie=`${cookieName('session')}=${await seal(old,'session',3600)}`;
+    assert.equal((await profile.POST(new Request('http://localhost:3000/api/kala/representative',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:JSON.stringify({name:'Profile',phone:'+2348000000000',email:'forged@example.com'})}))).status,400);
+    assert.equal((await transferApi.POST(new Request('http://localhost:3000/api/admin/kala/teams/transfer',{method:'POST',headers:{cookie,origin:'https://attacker.example','content-type':'application/json'},body:JSON.stringify(transfer)}))).status,403);
+    assert.equal((await sportsApi.POST(new Request('http://localhost:3000/api/kala/teams/invalid/sports',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:'{}'}),{params:Promise.resolve({id:'invalid'})})).status,400);
+   });
+  });
+  await t.test('versioned KALA eligibility declarations and combined organizer review',async t=>{
+   process.env.KALA_EVENT_SLUG='kala-eligibility-test';process.env.KALA_REGISTRATION_ENABLED='true';
+   const event=await db.event.create({data:{slug:process.env.KALA_EVENT_SLUG,name:'KALA eligibility',dateLocal:'2026-12-19',registrationEnabled:true}}),sport=await db.competition.create({data:{eventId:event.id,sportCode:'football',minPlayers:1,maxPlayers:3,registrationEnabled:true}});
+   const rep={subject:'eligibility-rep',email:'eligibility@example.com'};let sequence=0;
+   async function create(){const option=await db.teamOption.create({data:{eventId:event.id,key:`eligibility-team-${++sequence}`,name:`Eligibility Team ${sequence}`,enabled:true}});const team=await createTeam(db,rep,{teamOptionId:option.id,sportCodes:['football'],representative:{name:'Eligibility Representative',phone:'+2348000000000'}});await saveRoster(db,rep,team.rosters[0].id,{revision:1,members:[player]});return {team,rosterId:team.rosters[0].id};}
+   const legacy=await create();await submitRoster(db,rep,legacy.rosterId,2);
+   const enabled={competitionId:sport.id,revision:1,enabled:true,requirements:'Synthetic test requirement supplied by organizer.',evidenceRequired:true};
+   await t.test('only organizers configure current-event rules, with atomic revision winners',async()=>{
+    await assert.rejects(()=>eligibilitySettings(db,outsider),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>configureEligibility(db,outsider,enabled),e=>e instanceof AppError&&e.status===403);
+    const outcomes=await Promise.allSettled([configureEligibility(db,owner,enabled),configureEligibility(db,owner,enabled)]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);assert.equal((await eligibilitySettings(db,owner))[0].eligibilityRevision,2);
+    const foreign=await db.competition.findFirstOrThrow({where:{eventId:{not:event.id}}});await assert.rejects(()=>configureEligibility(db,owner,{...enabled,competitionId:foreign.id}),e=>e instanceof AppError&&e.code==='SPORT_NOT_FOUND');
+   });
+   await t.test('previously submitted rosters retain their original no-policy terms',async()=>{await reviewRoster(db,owner,legacy.rosterId,{revision:3,decision:'APPROVED',note:''});assert.equal((await db.sportRoster.findUniqueOrThrow({where:{id:legacy.rosterId}})).currentEligibilityId,null);});
+   const first=await create(),declaration={policyRevision:2,confirmed:true as const,response:'Synthetic team eligibility reference'};
+   await t.test('submission requires current policy acknowledgement and requested evidence; failures roll back',async()=>{
+    await assert.rejects(()=>submitRoster(db,rep,first.rosterId,2),e=>e instanceof AppError&&e.code==='ELIGIBILITY_REQUIRED');await assert.rejects(()=>submitRoster(db,rep,first.rosterId,2,{...declaration,policyRevision:1}),e=>e instanceof AppError&&e.code==='ELIGIBILITY_CHANGED');
+    await assert.rejects(()=>submitRoster(db,rep,first.rosterId,2,{...declaration,response:''}),e=>e instanceof AppError&&e.code==='ELIGIBILITY_EVIDENCE_REQUIRED');assert.equal(await db.eligibilitySubmission.count({where:{rosterId:first.rosterId}}),0);assert.equal((await db.sportRoster.findUniqueOrThrow({where:{id:first.rosterId}})).status,'DRAFT');
+    await submitRoster(db,rep,first.rosterId,2,declaration);const captured=await db.eligibilitySubmission.findFirstOrThrow({where:{rosterId:first.rosterId}});assert.equal(captured.requirements,enabled.requirements);assert.equal(captured.representativeEmail,rep.email);assert.equal(captured.decision,'PENDING');
+   });
+   await t.test('new policy revisions do not rewrite a pending declaration or silently approve it',async()=>{
+    await configureEligibility(db,owner,{...enabled,revision:2,requirements:'Synthetic changed eligibility rule.',evidenceRequired:false});
+    await assert.rejects(()=>reviewRoster(db,owner,first.rosterId,{revision:3,decision:'APPROVED',note:''}),e=>e instanceof AppError&&e.code==='ELIGIBILITY_REVIEW_REQUIRED');assert.equal((await db.eligibilitySubmission.findFirstOrThrow({where:{rosterId:first.rosterId}})).decision,'PENDING');
+    const outcomes=await Promise.allSettled([reviewRoster(db,owner,first.rosterId,{revision:3,decision:'APPROVED',note:'Checked original terms',eligibilityConfirmed:true}),reviewRoster(db,owner,first.rosterId,{revision:3,decision:'APPROVED',note:'Checked original terms',eligibilityConfirmed:true})]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);
+    const history=await eligibilityHistory(db,rep,first.rosterId);assert.equal(history[0].policyRevision,2);assert.equal(history[0].requirements,enabled.requirements);assert.equal(history[0].decision,'APPROVED');
+   });
+   await t.test('history is team-owner or organizer only, with no auth subject, hashes or internal reviewer identifiers',async()=>{
+    await assert.rejects(()=>eligibilityHistory(db,outsider,first.rosterId),e=>e instanceof AppError&&e.status===404);await assert.rejects(()=>eligibilityHistory(db,outsider,first.rosterId,true),e=>e instanceof AppError&&e.status===403);
+    const history=await eligibilityHistory(db,owner,first.rosterId,true);const serialized=JSON.stringify(history);for(const key of ['authSubject','membersHash','reviewedBy','representativeId'])assert.ok(!serialized.includes(key));assert.equal(history.length,1);
+   });
+   const correction=await create();
+   await t.test('rejection, saved correction and resubmission preserve immutable prior declarations',async()=>{
+    await submitRoster(db,rep,correction.rosterId,2,{...declaration,policyRevision:3,response:'Original synthetic reference'});await reviewRoster(db,owner,correction.rosterId,{revision:3,decision:'REJECTED',note:'Supply corrected eligibility reference'});
+    await saveRoster(db,rep,correction.rosterId,{revision:4,members:[{...player,fullName:'Corrected Player'}]});assert.equal((await db.sportRoster.findUniqueOrThrow({where:{id:correction.rosterId}})).currentEligibilityId,null);await submitRoster(db,rep,correction.rosterId,5,{...declaration,policyRevision:3,response:'Corrected synthetic reference'});
+    const history=await eligibilityHistory(db,rep,correction.rosterId);assert.equal(history.length,2);assert.ok(history.some(d=>d.decision==='REJECTED'&&d.response==='Original synthetic reference'));assert.ok(history.some(d=>d.decision==='PENDING'&&d.response==='Corrected synthetic reference'));
+   });
+   await t.test('policy closure removes future declarations but retains submitted evidence and history',async()=>{
+    await configureEligibility(db,owner,{...enabled,revision:3,enabled:false});const disabled=await create();await assert.rejects(()=>submitRoster(db,rep,disabled.rosterId,2,{...declaration,policyRevision:4}),e=>e instanceof AppError&&e.code==='ELIGIBILITY_CHANGED');await submitRoster(db,rep,disabled.rosterId,2);assert.equal(await db.eligibilitySubmission.count({where:{rosterId:disabled.rosterId}}),0);assert.equal((await eligibilityHistory(db,rep,first.rosterId))[0].requirements,enabled.requirements);
+   });
+   await t.test('transfers retain eligibility snapshots but revoke old owner access to history',async()=>{
+    const next={subject:'eligibility-transfer-target',email:'eligibility-next@example.com'};await saveRepresentativeProfile(db,next,{name:'Next Eligibility Rep',phone:'+2348000000001'});const target=await lookupRepresentative(db,owner,next.email),team=await db.teamRegistration.findUniqueOrThrow({where:{id:correction.team.id}});
+    await transferTeam(db,owner,{teamId:team.id,revision:team.ownershipRevision,currentRepresentativeId:team.representativeId,newRepresentativeId:target.id,newEmail:target.email,reason:'Eligibility test ownership transfer',confirmed:true});await assert.rejects(()=>eligibilityHistory(db,rep,correction.rosterId),e=>e instanceof AppError&&e.status===404);
+    assert.equal((await eligibilityHistory(db,next,correction.rosterId)).length,2);const roster=await db.sportRoster.findUniqueOrThrow({where:{id:correction.rosterId}});await reviewRoster(db,owner,correction.rosterId,{revision:roster.revision,decision:'APPROVED',note:'Checked transferred team snapshot',eligibilityConfirmed:true});
+   });
+   await t.test('hub/eligibility endpoints enforce organizer role, origin, and strict declarations',async()=>{
+    const api=await import('../../src/app/api/admin/kala/eligibility/route'),hub=await import('../../src/app/api/admin/session/route'),submit=await import('../../src/app/api/kala/rosters/[id]/submit/route');assert.equal((await api.GET(new Request('http://localhost:3000/api/admin/kala/eligibility'))).status,401);
+    const cookie=`${cookieName('session')}=${await seal(rep,'session',3600)}`;assert.equal((await hub.GET(new Request('http://localhost:3000/api/admin/session',{headers:{cookie}}))).status,403);
+    assert.equal((await api.PATCH(new Request('http://localhost:3000/api/admin/kala/eligibility',{method:'PATCH',headers:{cookie,origin:'https://attacker.example','content-type':'application/json'},body:JSON.stringify(enabled)}))).status,403);
+    assert.equal((await submit.POST(new Request('http://localhost:3000/api/kala/submit',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:JSON.stringify({revision:1,eligibility:{...declaration,requirements:'forged'}})}),{params:Promise.resolve({id:first.rosterId})})).status,400);
+   });
+  });
+  await t.test('KALA tournament draws, public results and correction dependencies',async t=>{
+   process.env.KALA_EVENT_SLUG='kala-tournament-test';process.env.KALA_REGISTRATION_ENABLED='true';
+   const event=await db.event.create({data:{slug:process.env.KALA_EVENT_SLUG,name:'Tournament test',dateLocal:'2026-12-19',registrationEnabled:true}});
+   const league=await db.competition.create({data:{eventId:event.id,sportCode:'football',minPlayers:1,maxPlayers:2,registrationEnabled:true}}),knockout=await db.competition.create({data:{eventId:event.id,sportCode:'basketball',minPlayers:1,maxPlayers:2,registrationEnabled:true}});
+   const rep={subject:'tournament-rep',email:'tournament@example.com'},leagueIds:string[]=[],knockoutIds:string[]=[];
+   for(let i=0;i<5;i++){const option=await db.teamOption.create({data:{eventId:event.id,key:`tournament-team-${i}`,name:`Tournament Team ${i}`,enabled:true}});const team=await createTeam(db,rep,{teamOptionId:option.id,sportCodes:['football','basketball'],representative:{name:'Tournament Representative',phone:'+2348000000000'}});for(const r of team.rosters){await saveRoster(db,rep,r.id,{revision:1,members:[player]});await submitRoster(db,rep,r.id,2);await reviewRoster(db,owner,r.id,{revision:3,decision:'APPROVED',note:''});(r.competition.sportCode==='football'?leagueIds:knockoutIds).push(r.id);}}
+   const rules={winPoints:4,drawPoints:1,lossPoints:0,allowDraws:true,tiebreakers:['SCORE_DIFFERENCE' as const,'SCORED' as const]};
+   const leagueConfig={action:'CONFIGURE' as const,competitionId:league.id,revision:null,configuration:{format:'ROUND_ROBIN' as const,scoreLabel:'Goals',rules}};
+   let leagueTournamentId:string,knockoutTournamentId:string;
+   const overview=async(id:string)=> (await tournamentOverview(db,owner,id)).tournament!;
+   await t.test('only organizers configure event-scoped tournaments; concurrent creation has one winner',async()=>{
+    await assert.rejects(()=>operateTournament(db,outsider,leagueConfig),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>tournamentOverview(db,outsider),e=>e instanceof AppError&&e.status===403);
+    const foreign=await db.competition.findFirstOrThrow({where:{eventId:{not:event.id}}});await assert.rejects(()=>operateTournament(db,owner,{...leagueConfig,competitionId:foreign.id}),e=>e instanceof AppError&&e.code==='SPORT_NOT_FOUND');
+    const outcomes=await Promise.allSettled([operateTournament(db,owner,leagueConfig),operateTournament(db,owner,leagueConfig)]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);leagueTournamentId=(await overview(league.id)).id;
+    await operateTournament(db,owner,{action:'CONFIGURE',competitionId:knockout.id,revision:null,configuration:{format:'KNOCKOUT',scoreLabel:'Points'}});knockoutTournamentId=(await overview(knockout.id)).id;
+   });
+   await t.test('draw entries must belong to the approved sport and invalid attempts leave no entries',async()=>{
+    await assert.rejects(()=>operateTournament(db,owner,{action:'DRAW',tournamentId:leagueTournamentId,revision:1,rosterIds:[leagueIds[0],knockoutIds[0]],confirmed:true}),e=>e instanceof AppError&&e.code==='INVALID_ENTRY');assert.equal(await db.tournamentEntry.count({where:{tournamentId:leagueTournamentId}}),0);
+    await assert.rejects(()=>operateTournament(db,owner,{action:'PUBLISH',tournamentId:leagueTournamentId,revision:1,published:true,confirmed:true}),e=>e instanceof AppError&&e.code==='DRAW_REQUIRED');assert.equal((await publishedTournaments(db)).length,0);
+   });
+   await t.test('one random league draw creates each pair once and rules remain locked',async()=>{
+    const input={action:'DRAW' as const,tournamentId:leagueTournamentId,revision:1,rosterIds:leagueIds,confirmed:true as const};const outcomes=await Promise.allSettled([operateTournament(db,owner,input),operateTournament(db,owner,input)]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);const leagueData=await overview(league.id);assert.equal(leagueData.fixtures.length,10);assert.equal(leagueData.entries.length,5);
+    await assert.rejects(()=>operateTournament(db,owner,{...leagueConfig,revision:leagueData.revision}),e=>e instanceof AppError&&e.code==='DRAW_LOCKED');
+   });
+   await t.test('published output has only teams, rules, fixtures and standings; unpublishing hides all',async()=>{
+    const leagueData=await overview(league.id);await operateTournament(db,owner,{action:'PUBLISH',tournamentId:leagueData.id,revision:leagueData.revision,published:true,confirmed:true});const publicData=await publishedTournaments(db);assert.equal(publicData.length,1);const text=JSON.stringify(publicData);for(const key of ['buyerEmail','representativeEmail','members','authSubject','reviewedBy','reason','revision'])assert.ok(!text.includes(key));assert.ok(!text.includes(rep.email));
+    const current=await overview(league.id);await operateTournament(db,owner,{action:'PUBLISH',tournamentId:leagueData.id,revision:current.revision,published:false,confirmed:true});assert.equal((await publishedTournaments(db)).length,0);
+   });
+   await t.test('schedules, concurrent results, computed standings and corrections are revision-safe and audited',async()=>{
+    let tournament=await overview(league.id),match=tournament.fixtures[0];await operateTournament(db,owner,{action:'SCHEDULE',tournamentId:tournament.id,fixtureId:match.id,revision:match.revision,startsAt:'2026-12-19T10:00:00+01:00',venue:'Synthetic court',reason:'Confirm test schedule'});match=(await overview(league.id)).fixtures[0];assert.equal(match.startsAt!.toISOString(),'2026-12-19T09:00:00.000Z');
+    const result={action:'RESULT' as const,tournamentId:tournament.id,fixtureId:match.id,revision:match.revision,homeScore:2,awayScore:0,reason:'Verified synthetic score',confirmed:true as const};const outcomes=await Promise.allSettled([operateTournament(db,owner,result),operateTournament(db,owner,result)]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);
+    tournament=await overview(league.id);assert.equal(tournament.standings.find(r=>r.rosterId===match.homeRosterId)!.points,4);match=tournament.fixtures[0];await operateTournament(db,owner,{...result,revision:match.revision,homeScore:0,awayScore:1,reason:'Correct synthetic score'});tournament=await overview(league.id);assert.equal(tournament.standings.find(r=>r.rosterId===match.awayRosterId)!.points,4);assert.equal(tournament.standings.find(r=>r.rosterId===match.homeRosterId)!.points,0);
+    assert.equal(await db.auditLog.count({where:{entityId:tournament.id,action:'TOURNAMENT_RESULT'}}),2);await assert.rejects(()=>operateTournament(db,owner,{action:'RESET_DRAW',tournamentId:tournament.id,revision:tournament.revision,reason:'Reset played draw',confirmed:true}),e=>e instanceof AppError&&e.code==='DRAW_IN_USE');
+   });
+   await t.test('league result clearance restates standings and permits an unpublished unplayed reset',async()=>{
+    let tournament=await overview(league.id),match=tournament.fixtures[0];await operateTournament(db,owner,{action:'CLEAR_RESULT',tournamentId:tournament.id,fixtureId:match.id,revision:match.revision,reason:'Clear synthetic score',confirmed:true});tournament=await overview(league.id);assert.ok(tournament.standings.every(r=>r.played===0));await operateTournament(db,owner,{action:'RESET_DRAW',tournamentId:tournament.id,revision:tournament.revision,reason:'Regenerate synthetic draw',confirmed:true});tournament=await overview(league.id);assert.equal(tournament.entries.length,0);assert.equal(tournament.fixtures.length,0);assert.equal(tournament.drawnAt,null);
+   });
+   await t.test('knockout draw for five teams creates byes and next-round targets without fake scores',async()=>{
+    await operateTournament(db,owner,{action:'DRAW',tournamentId:knockoutTournamentId,revision:1,rosterIds:knockoutIds,confirmed:true});const t=await overview(knockout.id);assert.equal(t.fixtures.length,7);assert.equal(t.fixtures.filter(f=>f.status==='BYE').length,3);assert.ok(t.fixtures.filter(f=>f.status==='BYE').every(f=>f.homeScore===null&&f.winnerRosterId===f.homeRosterId));const bye=t.fixtures.find(f=>f.status==='BYE')!;await assert.rejects(()=>operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:bye.id,revision:bye.revision,homeScore:1,awayScore:0,reason:'Cannot score a bye',confirmed:true}),e=>e instanceof AppError&&e.code==='BYE_LOCKED');
+   });
+   await t.test('knockout tied scores require a declared decider and auto-advance exactly once',async()=>{
+    const t=await overview(knockout.id),match=t.fixtures.find(f=>f.round===1&&f.status!=='BYE')!;const result={action:'RESULT' as const,tournamentId:t.id,fixtureId:match.id,revision:match.revision,homeScore:1,awayScore:1,reason:'Confirm tied synthetic score',confirmed:true as const};await assert.rejects(()=>operateTournament(db,owner,result),e=>e instanceof AppError&&e.code==='DECIDER_REQUIRED');await operateTournament(db,owner,{...result,deciderSide:'HOME',deciderNote:'Synthetic agreed decider result'});const updated=await overview(knockout.id),next=updated.fixtures.find(f=>f.id===match.nextFixtureId)!;assert.equal(match.nextSide==='HOME'?next.homeRosterId:next.awayRosterId,match.homeRosterId);assert.equal(updated.fixtures.find(f=>f.id===match.id)!.winnerRosterId,match.homeRosterId);
+   });
+   await t.test('winner-changing corrections block played descendants; clearing from later round reopens qualifiers',async()=>{
+    let t=await overview(knockout.id),first=t.fixtures.find(f=>f.round===1&&f.status==='FINAL')!,next=t.fixtures.find(f=>f.id===first.nextFixtureId)!;await operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:next.id,revision:next.revision,homeScore:3,awayScore:0,reason:'Confirm synthetic semifinal',confirmed:true});
+    t=await overview(knockout.id);first=t.fixtures.find(f=>f.id===first.id)!;await assert.rejects(()=>operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:first.id,revision:first.revision,homeScore:0,awayScore:2,reason:'Change qualifying winner',confirmed:true}),e=>e instanceof AppError&&e.code==='DOWNSTREAM_RESULT_EXISTS');
+    next=t.fixtures.find(f=>f.id===next.id)!;await operateTournament(db,owner,{action:'CLEAR_RESULT',tournamentId:t.id,fixtureId:next.id,revision:next.revision,reason:'Clear dependent result first',confirmed:true});t=await overview(knockout.id);first=t.fixtures.find(f=>f.id===first.id)!;await operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:first.id,revision:first.revision,homeScore:0,awayScore:2,reason:'Correct qualifying winner',confirmed:true});t=await overview(knockout.id);next=t.fixtures.find(f=>f.id===next.id)!;assert.equal(first.nextSide==='HOME'?next.homeRosterId:next.awayRosterId,first.awayRosterId);const final=t.fixtures.find(f=>!f.nextFixtureId)!;assert.ok(final.homeRosterId===null||final.awayRosterId===null);
+   });
+   await t.test('knockout completion determines champion while unchanged winners may correct scores',async()=>{
+    for(let round=2;round<=3;round++){let t=await overview(knockout.id);for(const fixture of t.fixtures.filter(f=>f.round===round)){if(fixture.status==='FINAL')continue;await operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:fixture.id,revision:fixture.revision,homeScore:2,awayScore:0,reason:'Confirm synthetic bracket result',confirmed:true});}}
+    let t=await overview(knockout.id);assert.ok(t.fixtures.find(f=>!f.nextFixtureId)!.winnerRosterId);const first=t.fixtures.find(f=>f.round===1&&f.status==='FINAL')!;await operateTournament(db,owner,{action:'RESULT',tournamentId:t.id,fixtureId:first.id,revision:first.revision,homeScore:0,awayScore:3,reason:'Correct score without changing winner',confirmed:true});t=await overview(knockout.id);assert.equal(t.standings.length,0);assert.equal(t.fixtures.find(f=>f.id===first.id)!.awayScore,3);
+   });
+   await t.test('tournament endpoints require organizer role, same origin and strict confirmed bodies',async()=>{
+    const api=await import('../../src/app/api/admin/kala/tournaments/route');assert.equal((await api.GET(new Request('http://localhost:3000/api/admin/kala/tournaments'))).status,401);const cookie=`${cookieName('session')}=${await seal(owner,'session',3600)}`;
+    assert.equal((await api.POST(new Request('http://localhost:3000/api/admin/kala/tournaments',{method:'POST',headers:{cookie,origin:'https://attacker.example','content-type':'application/json'},body:JSON.stringify(leagueConfig)}))).status,403);
+    assert.equal((await api.GET(new Request('http://localhost:3000/api/admin/kala/tournaments?competitionId=invalid',{headers:{cookie}}))).status,400);
+    assert.equal((await api.POST(new Request('http://localhost:3000/api/admin/kala/tournaments',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:JSON.stringify({action:'DRAW',tournamentId:leagueTournamentId,revision:1,rosterIds:leagueIds,confirmed:true,staffId:owner.subject})}))).status,400);
+   });
+  });
+  await t.test('organizers revoke approved rosters with retained history and tournament review holds',async t=>{
+   process.env.KALA_EVENT_SLUG='kala-approved-rejection';process.env.KALA_REGISTRATION_ENABLED='true';
+   const event=await db.event.create({data:{slug:process.env.KALA_EVENT_SLUG,name:'Approval revocation test',dateLocal:'2026-12-19',registrationEnabled:true}}),sport=await db.competition.create({data:{eventId:event.id,sportCode:'football',minPlayers:1,maxPlayers:3,registrationEnabled:true,eligibilityEnabled:true,eligibilityRequirements:'Synthetic supplied eligibility requirement'}});
+   const rep={subject:'revocation-rep',email:'revocation@example.com'},ids:string[]=[];
+   for(let i=0;i<2;i++){const option=await db.teamOption.create({data:{eventId:event.id,key:`revocation-team-${i}`,name:`Revocation Team ${i}`,enabled:true}}),team=await createTeam(db,rep,{teamOptionId:option.id,sportCodes:['football'],representative:{name:'Revocation Representative',phone:'+2348000000000'}});const r=team.rosters[0];ids.push(r.id);await saveRoster(db,rep,r.id,{revision:1,members:[player]});await submitRoster(db,rep,r.id,2,{policyRevision:1,confirmed:true,response:''});await reviewRoster(db,owner,r.id,{revision:3,decision:'APPROVED',note:'Original approval',eligibilityConfirmed:true});}
+   await operateTournament(db,owner,{action:'CONFIGURE',competitionId:sport.id,revision:null,configuration:{format:'KNOCKOUT',scoreLabel:'Goals'}});let tournament=(await tournamentOverview(db,owner,sport.id)).tournament!;await operateTournament(db,owner,{action:'DRAW',tournamentId:tournament.id,revision:tournament.revision,rosterIds:ids,confirmed:true});tournament=(await tournamentOverview(db,owner,sport.id)).tournament!;const match=tournament.fixtures[0];await operateTournament(db,owner,{action:'RESULT',tournamentId:tournament.id,fixtureId:match.id,revision:match.revision,homeScore:2,awayScore:0,reason:'Synthetic verified final',confirmed:true});tournament=(await tournamentOverview(db,owner,sport.id)).tournament!;await operateTournament(db,owner,{action:'PUBLISH',tournamentId:tournament.id,revision:tournament.revision,published:true,confirmed:true});
+   const before=await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]},include:{currentEligibility:true,members:true}}),rejection={revision:before.revision,decision:'REJECTED' as const,note:'Organizer found an eligibility issue after approval'};
+   await t.test('approved rejection requires organizer access, a reason and current revision',async()=>{await assert.rejects(()=>reviewRoster(db,outsider,ids[0],rejection),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>reviewRoster(db,owner,ids[0],{...rejection,note:'   '}),e=>e instanceof AppError&&e.code==='REJECTION_REASON_REQUIRED');await assert.rejects(()=>reviewRoster(db,owner,ids[0],{...rejection,revision:1}),e=>e instanceof AppError&&e.code==='STALE_REVISION');assert.equal((await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]}})).status,'APPROVED');});
+   await t.test('one revocation winner retains players and approved eligibility evidence, with reason and actor audit',async()=>{const outcomes=await Promise.allSettled([reviewRoster(db,owner,ids[0],rejection),reviewRoster(db,owner,ids[0],rejection)]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);const after=await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]},include:{currentEligibility:true,members:true}});assert.equal(after.status,'REJECTED');assert.equal(after.reviewNote,rejection.note);assert.deepEqual(after.members,before.members);assert.deepEqual(after.currentEligibility,before.currentEligibility);assert.equal((await myTeams(db,rep))[0].rosters[0].reviewNote,rejection.note);assert.equal(await db.auditLog.count({where:{entityId:ids[0],action:'ROSTER_APPROVAL_REVOKED'}}),1);});
+   await t.test('revocation unpublishes the draw and blocks new results/publication while retaining past scores',async()=>{const view=await tournamentOverview(db,owner,sport.id),current=view.tournament!;assert.equal(current.published,false);assert.equal(view.ineligibleEntries!.length,1);assert.equal((await publishedTournaments(db)).length,0);assert.equal(current.fixtures[0].homeScore,2);assert.equal(current.fixtures[0].status,'FINAL');await assert.rejects(()=>operateTournament(db,owner,{action:'PUBLISH',tournamentId:current.id,revision:current.revision,published:true,confirmed:true}),e=>e instanceof AppError&&e.code==='ENTRIES_NEED_REVIEW');await assert.rejects(()=>operateTournament(db,owner,{action:'RESULT',tournamentId:current.id,fixtureId:current.fixtures[0].id,revision:current.fixtures[0].revision,homeScore:3,awayScore:0,reason:'Attempt held result correction',confirmed:true}),e=>e instanceof AppError&&e.code==='ENTRIES_NEED_REVIEW');});
+   await t.test('representative correction/resubmission and reapproval resolve the hold without automatic republication',async()=>{let roster=await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]}});await saveRoster(db,rep,ids[0],{revision:roster.revision,members:[{...player,fullName:'Corrected Eligibility Player'}]});roster=await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]}});await submitRoster(db,rep,ids[0],roster.revision,{policyRevision:1,confirmed:true,response:'Corrected eligibility reference'});roster=await db.sportRoster.findUniqueOrThrow({where:{id:ids[0]}});await reviewRoster(db,owner,ids[0],{revision:roster.revision,decision:'APPROVED',note:'Corrections checked',eligibilityConfirmed:true});const history=await eligibilityHistory(db,rep,ids[0]);assert.equal(history.length,2);assert.ok(history.every(h=>h.decision==='APPROVED'));const view=await tournamentOverview(db,owner,sport.id);assert.equal(view.ineligibleEntries!.length,0);assert.equal(view.tournament!.published,false);await operateTournament(db,owner,{action:'PUBLISH',tournamentId:view.tournament!.id,revision:view.tournament!.revision,published:true,confirmed:true});assert.equal((await publishedTournaments(db)).length,1);});
+  });
+  await t.test('staff access management and safe audit history',async t=>{
+   await db.staffUser.updateMany({where:{authSubject:{not:owner.subject},role:'ADMIN'},data:{enabled:false}});
+   const target={subject:'opaque-subject-staff-271',email:'staff-target@example.com'};
+   const profile=await db.representative.create({data:{authSubject:target.subject,email:target.email,name:'Staff Target',phone:'+2348000000000',verifiedAt:new Date()}});
+   const input={representativeId:profile.id,email:profile.email,revision:0,role:'SCANNER' as const,enabled:true,reason:'Grant event scanning access',confirmed:true as const};
+   await t.test('verified account preview and admin-only access never expose auth subjects',async()=>{
+    await assert.rejects(()=>lookupStaffAccount(db,outsider,target.email),e=>e instanceof AppError&&e.status===403);
+    await assert.rejects(()=>lookupStaffAccount(db,owner,'absent@example.com'),e=>e instanceof AppError&&e.code==='VERIFIED_ACCOUNT_REQUIRED');
+    const view=await lookupStaffAccount(db,owner,target.email.toUpperCase());assert.equal(view.staff,null);assert.equal(view.representativeId,profile.id);assert.ok(!JSON.stringify(view).includes(target.subject));
+    await assert.rejects(()=>changeStaffAccess(db,outsider,input),e=>e instanceof AppError&&e.status===403);
+    assert.equal(staffChangeInput.safeParse({...input,confirmed:false}).success,false);assert.equal(staffChangeInput.safeParse({...input,reason:' '}).success,false);assert.equal(staffChangeInput.safeParse({...input,authSubject:'forged'}).success,false);
+   });
+   await t.test('concurrent grants have one winner; scanner cannot access admin history',async()=>{
+    const results=await Promise.allSettled([changeStaffAccess(db,owner,input),changeStaffAccess(db,owner,input)]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+    await scannerSession(db,target);await assert.rejects(()=>auditHistory(db,target,{}),e=>e instanceof AppError&&e.status===403);
+    const list=await staffOverview(db,owner,{email:target.email});assert.equal(list.staff.length,1);assert.equal(list.staff[0].revision,1);assert.ok(!JSON.stringify(list).includes(target.subject));
+   });
+   await t.test('disabled staff immediately lose scanning and stale/account-changed requests cannot restore access',async()=>{
+    await assert.rejects(()=>changeStaffAccess(db,owner,{...input,email:'wrong@example.com',revision:1}),e=>e instanceof AppError&&e.code==='ACCOUNT_CHANGED');
+    await changeStaffAccess(db,owner,{...input,revision:1,enabled:false,reason:'Shift ended; disable scanner'});await assert.rejects(()=>scannerSession(db,target),e=>e instanceof AppError&&e.status===403);
+    await assert.rejects(()=>changeStaffAccess(db,owner,{...input,revision:1}),e=>e instanceof AppError&&e.code==='STALE_REVISION');
+   });
+   await t.test('last organizer remains protected; concurrent mutual demotions leave one active admin',async()=>{
+    const own=await db.staffUser.findUniqueOrThrow({where:{authSubject:owner.subject}}),ownProfile=await db.representative.findUniqueOrThrow({where:{authSubject:owner.subject}});
+    const demote={representativeId:ownProfile.id,email:ownProfile.email,revision:own.revision,role:'SCANNER' as const,enabled:true,reason:'Change organizer to scanner',confirmed:true as const};
+    await assert.rejects(()=>changeStaffAccess(db,owner,demote),e=>e instanceof AppError&&e.code==='LAST_ADMIN');
+    const second=await changeStaffAccess(db,owner,{...input,revision:2,role:'ADMIN',reason:'Grant second organizer access'});
+    const results=await Promise.allSettled([changeStaffAccess(db,owner,{...input,revision:second.revision,enabled:false,role:'ADMIN'}),changeStaffAccess(db,target,demote)]);
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(await db.staffUser.count({where:{role:'ADMIN',enabled:true}}),1);
+    // Restore fixture organizer using the trusted operator path for later assertions.
+    await db.staffUser.update({where:{id:own.id},data:{role:'ADMIN',enabled:true,revision:{increment:1}}});
+   });
+   await t.test('audit actor/action/date filters, tied timestamps and cursor pages retain safe details',async()=>{
+    const actor=await db.staffUser.findUniqueOrThrow({where:{authSubject:owner.subject}}),stamp=new Date('2026-10-13T12:00:00Z');
+    await db.auditLog.createMany({data:Array.from({length:55},(_,i)=>({actorId:actor.id,action:'TEST_AUDIT_PAGE',entityType:'StaffUser',entityId:profile.id,createdAt:stamp,metadata:{reason:'Synthetic test reason',token:'private-code',encryptedToken:'secret',providerPayload:{secret:'never'},before:{role:'SCANNER',enabled:false,authSubject:'private'}}}))});
+    const filter={action:'TEST_AUDIT_PAGE',actorId:actor.id,from:'2026-10-13T11:00:00Z',to:'2026-10-13T13:00:00Z'};
+    const first=await auditHistory(db,owner,filter),second=await auditHistory(db,owner,{...filter,cursor:first.nextCursor!});assert.equal(first.records.length,50);assert.equal(second.records.length,5);assert.equal(new Set([...first.records,...second.records].map(r=>r.id)).size,55);
+    assert.ok(!JSON.stringify(first).includes('private-code'));assert.ok(!JSON.stringify(first).includes('encryptedToken'));assert.deepEqual(first.records[0].metadata,{reason:'Synthetic test reason',before:{role:'SCANNER',enabled:false}});assert.equal((await auditHistory(db,owner,{action:'STAFF_ACCESS_CHANGED',entityId:(await db.staffUser.findUniqueOrThrow({where:{authSubject:target.subject}})).id})).records[0].actor?.email,owner.email);
+    assert.equal(auditFilters.safeParse({from:'2026-10-14T12:00:00Z',to:'2026-10-13T12:00:00Z'}).success,false);assert.deepEqual(auditDetails({checkoutUrl:'private',tokenHash:'private',before:{token:'private'}}),{});
+   });
+   await t.test('staff and audit endpoints reject absent sessions, scanner roles, cross-origin and forged bodies',async()=>{
+    const list=await import('../../src/app/api/admin/staff/route'),history=await import('../../src/app/api/admin/audit/route'),change=await import('../../src/app/api/admin/staff/change/route');
+    assert.equal((await list.GET(new Request('http://localhost:3000/api/admin/staff'))).status,401);
+    const scanner={subject:'api-staff-scanner',email:'api-staff-scanner@example.com'};await db.staffUser.create({data:{authSubject:scanner.subject,email:scanner.email,role:'SCANNER',enabled:true}});const scannerCookie=`${cookieName('session')}=${await seal(scanner,'session',3600)}`;
+    assert.equal((await history.GET(new Request('http://localhost:3000/api/admin/audit',{headers:{cookie:scannerCookie}}))).status,403);assert.equal((await list.GET(new Request('http://localhost:3000/api/admin/staff',{headers:{cookie:scannerCookie}}))).status,403);
+    const cookie=`${cookieName('session')}=${await seal(owner,'session',3600)}`;
+    assert.equal((await history.GET(new Request('http://localhost:3000/api/admin/audit?extra=bad',{headers:{cookie}}))).status,400);
+    assert.equal((await change.POST(new Request('http://localhost:3000/api/admin/staff/change',{method:'POST',headers:{cookie,origin:'https://wrong.example','content-type':'application/json'},body:JSON.stringify(input)}))).status,403);
+    assert.equal((await change.POST(new Request('http://localhost:3000/api/admin/staff/change',{method:'POST',headers:{cookie,origin:'http://localhost:3000','content-type':'application/json'},body:JSON.stringify({...input,confirmed:false})}))).status,400);
+   });
+  });
+  await t.test('merch catalogue revisions, variant availability and filtered operational exports',async t=>{
+   process.env.MERCH_SALES_ENABLED='true';
+   const shopper={subject:'catalog-shopper',email:'catalog-shopper@example.com'};
+   const product=await db.merchProduct.create({data:{slug:'catalog-test-tee',name:'Original Tee',kind:'TEE',description:'Original design',priceMinor:5000000,active:true,variants:{create:[{label:'M',capacity:20},{label:'L',capacity:20}]}} ,include:{variants:true}});
+   const variant=product.variants.find(v=>v.label==='M')!;
+   const purchase={buyerName:'=Synthetic Buyer',phone:'+2348000000000',fulfilment:'PICKUP' as const,idempotencyKey:randomUUID(),items:[{variantId:variant.id,quantity:1}]};
+   const captured=await reserveMerch(db,shopper,purchase,'test');
+   const oldQuote=await createMerchQuote(db,shopper,{fulfilment:'PICKUP',items:purchase.items},'test');
+   const edit={productId:product.id,revision:1,name:'New Tee',description:'New design',kind:'TEE' as const,priceMinor:5500000,imageUrl:'https://images.example.com/tee.png',variants:product.variants.map(v=>({id:v.id,label:v.label,enabled:true})),reason:'Replace placeholder design and price',confirmed:true as const};
+   await t.test('catalogue is organizer-only and new products start closed with zero stock',async()=>{
+    await assert.rejects(()=>adminCatalog(db,outsider),e=>e instanceof AppError&&e.status===403);await assert.rejects(()=>saveCatalog(db,outsider,edit),e=>e instanceof AppError&&e.status===403);
+    const created=await saveCatalog(db,owner,{...edit,productId:null,revision:null,name:'New Cap',kind:'CAP',variants:[{id:null,label:'One size',enabled:true}]});assert.equal(created.active,false);assert.equal(created.variants[0].capacity,0);assert.equal(created.revision,1);
+    assert.equal(catalogInput.safeParse({...edit,imageUrl:'javascript:alert(1)'}).success,false);assert.equal(catalogInput.safeParse({...edit,variants:[{id:null,label:'m',enabled:true},{id:null,label:'M',enabled:true}]}).success,false);
+   });
+   await t.test('one catalogue revision winner preserves old order snapshots and rejects stale price quotes',async()=>{
+    const attempts=await Promise.allSettled([saveCatalog(db,owner,edit),saveCatalog(db,owner,edit)]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
+    const old=await db.merchOrder.findUniqueOrThrow({where:{id:captured.id},include:{lines:true}});assert.equal(old.lines[0].productName,'Original Tee');assert.equal(old.lines[0].unitPriceMinor,5000000);assert.equal(old.totalMinor,5000000);
+    const before=(await db.merchVariant.findUniqueOrThrow({where:{id:variant.id}})).reserved;
+    await assert.rejects(()=>reserveMerch(db,shopper,{...purchase,idempotencyKey:randomUUID(),quoteToken:oldQuote.quoteToken},'test'),e=>e instanceof AppError&&e.code==='QUOTE_CHANGED');assert.equal((await db.merchVariant.findUniqueOrThrow({where:{id:variant.id}})).reserved,before);
+   });
+   await t.test('variant edits retain IDs, support label swaps and zero-stock additions, and cannot delete historical variants',async()=>{
+    await assert.rejects(()=>saveCatalog(db,owner,{...edit,revision:2,variants:edit.variants.slice(0,1)}),e=>e instanceof AppError&&e.code==='INVALID_VARIANTS');
+    const saved=await saveCatalog(db,owner,{...edit,revision:2,variants:edit.variants.map(v=>({...v,label:v.label==='M'?'L':'M'})).concat([{id:null as unknown as string,label:'XL',enabled:true}])});assert.equal(saved.variants.length,3);assert.equal(saved.variants.find(v=>v.label==='XL')!.capacity,0);assert.equal(saved.variants.find(v=>v.id===variant.id)!.label,'L');
+    assert.equal((await db.merchOrderLine.findFirstOrThrow({where:{orderId:captured.id}})).variantLabel,'M');
+   });
+   await t.test('disabled variants reject new quotes/reservations while captured reservations can still retry',async()=>{
+    const current=await db.merchProduct.findUniqueOrThrow({where:{id:product.id},include:{variants:true}});await saveCatalog(db,owner,{...edit,revision:current.revision,variants:current.variants.map(v=>({id:v.id,label:v.label,enabled:v.id!==variant.id}))});
+    await assert.rejects(()=>createMerchQuote(db,shopper,{fulfilment:'PICKUP',items:purchase.items},'test'),e=>e instanceof AppError&&e.code==='SOLD_OUT');await assert.rejects(()=>reserveMerch(db,shopper,{...purchase,idempotencyKey:randomUUID()},'test'),e=>e instanceof AppError&&e.code==='UNAVAILABLE');
+    assert.equal((await reserveMerch(db,shopper,purchase,'test')).id,captured.id);const publicProduct=(await merchCatalog(db)).products.find(p=>p.id===product.id)!;assert.equal(publicProduct.imageUrl,edit.imageUrl);assert.equal(publicProduct.variants.find(v=>v.id===variant.id)!.available,false);
+   });
+   await t.test('inventory changes invalidate catalogue previews and recorded catalogue history shows reason/price changes',async()=>{
+    const current=await db.merchProduct.findUniqueOrThrow({where:{id:product.id},include:{variants:true}});await updateInventory(db,owner,{productId:product.id,expectedActive:true,active:true,variants:current.variants.map(v=>({id:v.id,expectedCapacity:v.capacity,capacity:v.capacity+1}))});await assert.rejects(()=>saveCatalog(db,owner,{...edit,revision:current.revision,variants:current.variants.map(v=>({id:v.id,label:v.label,enabled:v.enabled}))}),e=>e instanceof AppError&&e.code==='STALE_CATALOG');
+    const audit=await auditHistory(db,owner,{action:'MERCH_CATALOG_UPDATED',entityId:product.id});assert.equal(audit.records[0].metadata.reason,edit.reason);assert.equal(audit.records[0].metadata.toPriceMinor,5500000);
+   });
+   await t.test('order search, method/status/mode filters and paid summary are event-scoped and redacted',async()=>{
+    const filters=merchOrderFilters.parse({mode:'test',q:shopper.email,fulfilment:'PICKUP',status:'RESERVED'});let view=await merchOrderOverview(db,owner,filters);assert.equal(view.orders.length,1);assert.equal(view.orders[0].id,captured.id);assert.equal(view.summary.matchedOrders,1);assert.equal(view.summary.paidOrders,0);assert.ok(!JSON.stringify(view).includes('buyerSubject'));assert.ok(!JSON.stringify(view).includes('authorizationUrl'));
+    assert.equal((await merchOrderOverview(db,owner,merchOrderFilters.parse({q:captured.id,fulfilment:'DELIVERY'}))).orders.length,0);assert.equal((await merchOrderOverview(db,owner,merchOrderFilters.parse({q:shopper.email,mode:'live'}))).orders.length,0);
+    await verifyMerch(db,captured.payments[0].reference,shopper,{domain:'test',initialize:async()=>{throw new Error('Not used');},verify:async reference=>({id:'993817261',domain:'test',status:'success',reference,amount:5000000,currency:'NGN',paid_at:new Date().toISOString(),customer:{email:shopper.email}})});await updateMerchFulfilment(db,owner,captured.id,{revision:1,status:'READY',note:'Prepared test pickup'});
+    view=await merchOrderOverview(db,owner,merchOrderFilters.parse({q:shopper.email,status:'PAID',fulfilmentStatus:'READY'}));assert.equal(view.summary.paidTotalMinor,5000000);assert.equal(view.orders.length,1);
+    assert.equal((await merchOrderOverview(db,owner,merchOrderFilters.parse({q:captured.payments[0].reference}))).orders[0].id,captured.id);
+    await assert.rejects(()=>merchOrderOverview(db,outsider,filters),e=>e instanceof AppError&&e.status===403);
+   });
+   await t.test('filtered CSV protects spreadsheet cells, retains captured items, omits private fields and refuses oversized exports',async()=>{
+    const csv=await exportMerchOrders(db,owner,merchOrderFilters.parse({q:shopper.email}));assert.ok(csv.includes("'=Synthetic Buyer"));assert.ok(csv.includes("'+2348000000000"));assert.ok(csv.includes('Original Tee'));assert.ok(!csv.includes('authorizationUrl'));assert.ok(!csv.includes('catalog-shopper",'));
+    assert.equal(csvCell(' =HYPERLINK("bad")'),`"' =HYPERLINK(""bad"")"`);
+    await assert.rejects(()=>exportMerchOrders(db,outsider,merchOrderFilters.parse({})),e=>e instanceof AppError&&e.status===403);
+    const stamp=new Date('2026-10-13T13:00:00Z');await db.merchOrder.createMany({data:Array.from({length:501},()=>({eventSlug:concertSlug(),idempotencyKey:randomUUID(),requestHash:'synthetic',buyerSubject:'export-pages',buyerName:'Export Pages',buyerEmail:'export-pages@example.com',phone:'+2348000000000',fulfilment:'PICKUP' as const,totalMinor:100,expiresAt:new Date(Date.now()+60000),createdAt:stamp}))});const bulk=await db.merchOrder.findMany({where:{buyerSubject:'export-pages'},select:{id:true}});await db.merchPayment.createMany({data:bulk.map(o=>({orderId:o.id,reference:randomUUID(),domain:'test',amountMinor:100,currency:'NGN'}))});
+    await assert.rejects(()=>exportMerchOrders(db,owner,merchOrderFilters.parse({q:'export-pages@example.com'})),e=>e instanceof AppError&&e.code==='EXPORT_TOO_LARGE');
+    const first=await merchOrderOverview(db,owner,merchOrderFilters.parse({q:'export-pages@example.com'})),second=await merchOrderOverview(db,owner,merchOrderFilters.parse({q:'export-pages@example.com',before:first.nextCursor!}));assert.equal(first.orders.length,50);assert.equal(new Set([...first.orders,...second.orders].map(o=>o.id)).size,100);
+   });
+   await t.test('catalogue and CSV routes enforce sessions, origins, strict bodies and export filter boundaries',async()=>{
+    const cat=await import('../../src/app/api/admin/merch/catalog/route'),exp=await import('../../src/app/api/admin/merch/export/route');assert.equal((await cat.GET(new Request('http://localhost:3000/api/admin/merch/catalog'))).status,401);assert.equal((await exp.GET(new Request('http://localhost:3000/api/admin/merch/export'))).status,401);
+    const cookie=`${cookieName('session')}=${await seal(owner,'session',3600)}`;assert.equal((await cat.POST(new Request('http://localhost:3000/api/admin/merch/catalog',{method:'POST',headers:{cookie,origin:'https://wrong.example','content-type':'application/json'},body:JSON.stringify(edit)}))).status,403);
+    const response=await exp.GET(new Request('http://localhost:3000/api/admin/merch/export?q='+shopper.email,{headers:{cookie}}));assert.equal(response.status,200);assert.ok(response.headers.get('content-disposition')!.includes('attachment'));assert.equal(response.headers.get('cache-control'),'no-store');assert.equal((await exp.GET(new Request('http://localhost:3000/api/admin/merch/export?before='+randomUUID(),{headers:{cookie}}))).status,400);
+   });
+  });
+  await t.test('transactional notification delivery and controlled email operations',async t=>{
+   process.env.NOTIFICATIONS_ENABLED='true';process.env.KALA_NOTIFICATION_MODE='test';process.env.EMAIL_DELIVERY_ENABLED='true';process.env.TICKET_EMAIL_MODE='test';process.env.TICKET_EMAIL_FROM='notifications@example.com';process.env.RESEND_API_KEY='re_mock_only';
+   process.env.KALA_EVENT_SLUG='kala-notifications';const event=await db.event.create({data:{slug:process.env.KALA_EVENT_SLUG,name:'KALA Email Test',dateLocal:'2026-12-19',registrationEnabled:true}}),option=await db.teamOption.create({data:{eventId:event.id,key:'notification-team',name:'Notification Team',enabled:true}});await db.competition.create({data:{eventId:event.id,sportCode:'football',minPlayers:1,maxPlayers:3,registrationEnabled:true}});
+   const rep={subject:'notification-rep',email:'notification-rep@example.com'},team=await createTeam(db,rep,{teamOptionId:option.id,sportCodes:['football'],representative:{name:'<Rep>',phone:'+2348000000000'}});const rosterId=team.rosters[0].id;let revision=team.rosters[0].revision;
+   await saveRoster(db,rep,rosterId,{revision,members:[player]});revision++;await submitRoster(db,rep,rosterId,revision);revision++;
+   let queued=await db.outboxMessage.findUniqueOrThrow({where:{deduplicationKey:`kala:${rosterId}:${revision}`}});const calls:{payload:EmailPayload;key:string}[]=[];
+   const gateway=async(payload:EmailPayload,key:string)=>{calls.push({payload,key});return 'mock-notification-'+calls.length;};
+   await t.test('submission queues only encrypted recipient/content inside the transaction and a failure rolls back both',async()=>{
+    assert.equal(queued.kind,'KALA_SUBMITTED');assert.ok(queued.notificationSnapshot);assert.ok(!JSON.stringify(queued.payload).includes(rep.email));assert.ok(!queued.notificationSnapshot!.includes(rep.email));
+    await assert.rejects(()=>submitRoster(db,rep,rosterId,revision-1),e=>e instanceof AppError&&e.code==='STALE_REVISION');assert.equal(await db.outboxMessage.count({where:{kind:'KALA_SUBMITTED',scopeSlug:event.slug}}),1);
+    const before=await db.outboxMessage.count();await assert.rejects(()=>db.$transaction(async tx=>{await queueNotification(tx,'rollback-notification','KALA_SUBMITTED','test',event.slug,{to:rep.email,subject:'Rollback',text:'No send',linkPath:'/kala-games',entityId:rosterId,revision,status:'SUBMITTED',representativeId:(await tx.representative.findUniqueOrThrow({where:{authSubject:rep.subject}})).id});throw new Error('rollback');}));assert.equal(await db.outboxMessage.count(),before);
+   });
+   await t.test('only matching mode/event is delivered; concurrent leases send once with escaped content and test banner',async()=>{
+    process.env.TICKET_EMAIL_MODE='live';assert.equal((await deliverNotifications(db,gateway)).sent,0);process.env.TICKET_EMAIL_MODE='test';
+    const results=await Promise.all([deliverNotifications(db,gateway),deliverNotifications(db,gateway)]);assert.equal(results.reduce((n,r)=>n+r.sent,0),1);assert.equal(calls.length,1);assert.equal(calls[0].payload.to[0],rep.email);assert.ok(calls[0].payload.subject.startsWith('[TEST]'));assert.ok(calls[0].payload.html.includes('&lt;Rep&gt;'));assert.ok(!calls[0].payload.html.includes('<Rep>'));
+   });
+   await t.test('review queues the required rejection reason and supersedes queued older statuses',async()=>{
+    await reviewRoster(db,owner,rosterId,{revision,decision:'REJECTED',note:'Replace an ineligible player.'});revision++;
+    const review=await db.outboxMessage.findUniqueOrThrow({where:{deduplicationKey:`kala:${rosterId}:${revision}`}});assert.equal(review.kind,'KALA_REVIEWED');await deliverNotifications(db,gateway);assert.ok(calls.at(-1)!.payload.text.includes('Replace an ineligible player.'));
+    await saveRoster(db,rep,rosterId,{revision,members:[{...player,fullName:'Corrected Player'}]});revision++;await submitRoster(db,rep,rosterId,revision);revision++;await reviewRoster(db,owner,rosterId,{revision,decision:'APPROVED',note:'Checked'});revision++;
+    const result=await deliverNotifications(db,gateway);assert.equal(result.blocked,1);assert.equal(result.sent,1);assert.equal((await db.outboxMessage.findUniqueOrThrow({where:{deduplicationKey:`kala:${rosterId}:${revision-1}`}})).lastErrorCode,'NOTIFICATION_SUPERSEDED');
+   });
+   await t.test('timeouts keep frozen payload/key; retry and resend preserve or change generation with one revision winner',async()=>{
+    queued=await db.outboxMessage.findUniqueOrThrow({where:{deduplicationKey:`kala:${rosterId}:${revision}`}});await assert.rejects(()=>operateEmail(db,outsider,{messageId:queued.id,revision:1,action:'RESEND',reason:'Synthetic retry reason',confirmed:true,acknowledgeDuplicate:true}),e=>e instanceof AppError&&e.status===403);
+    const requests=await Promise.allSettled([operateEmail(db,owner,{messageId:queued.id,revision:1,action:'RESEND',reason:'Confirmed explicit copy request',confirmed:true,acknowledgeDuplicate:true}),operateEmail(db,owner,{messageId:queued.id,revision:1,action:'RESEND',reason:'Confirmed explicit copy request',confirmed:true,acknowledgeDuplicate:true})]);assert.equal(requests.filter(r=>r.status==='fulfilled').length,1);
+    const retryCalls:{payload:EmailPayload;key:string}[]=[];const flaky=async(payload:EmailPayload,key:string)=>{retryCalls.push({payload,key});if(retryCalls.length===1)throw new Error('uncertain timeout');return 'mock-recovered';};assert.equal((await deliverNotifications(db,flaky)).retrying,1);const pending=await db.outboxMessage.findUniqueOrThrow({where:{id:queued.id}});assert.equal(pending.deliveryGeneration,2);
+    await operateEmail(db,owner,{messageId:pending.id,revision:pending.revision,action:'RETRY',reason:'Retry within provider delivery window',confirmed:true});process.env.TICKET_EMAIL_FROM='different@example.com';assert.equal((await deliverNotifications(db,flaky)).sent,1);assert.deepEqual(retryCalls[0],retryCalls[1]);assert.ok(retryCalls[0].key.endsWith(':g2'));
+   });
+   await t.test('changed representative and expired provider window block unsafe delivery; in-flight operations cannot alter a lease',async()=>{
+    const current=await db.outboxMessage.findUniqueOrThrow({where:{id:queued.id}});await operateEmail(db,owner,{messageId:current.id,revision:current.revision,action:'RESEND',reason:'Synthetic ownership guard test',confirmed:true,acknowledgeDuplicate:true});const oldRep=await db.representative.findUniqueOrThrow({where:{authSubject:rep.subject}});const next=await db.representative.create({data:{authSubject:'email-new-rep',email:'email-new-rep@example.com',name:'Next Rep',phone:'+2348000000000',verifiedAt:new Date()}});await db.teamRegistration.update({where:{id:team.id},data:{representativeId:next.id}});const before=calls.length;assert.equal((await deliverNotifications(db,gateway)).blocked,1);assert.equal(calls.length,before);assert.equal((await db.outboxMessage.findUniqueOrThrow({where:{id:current.id}})).lastErrorCode,'RECIPIENT_CHANGED');await db.teamRegistration.update({where:{id:team.id},data:{representativeId:oldRep.id}});
+    const blocked=await db.outboxMessage.update({where:{id:current.id},data:{firstAttemptAt:new Date(Date.now()-24*3600000)}});await assert.rejects(()=>operateEmail(db,owner,{messageId:blocked.id,revision:blocked.revision,action:'RETRY',reason:'Too old to retry safely',confirmed:true}),e=>e instanceof AppError&&e.code==='RESEND_REQUIRED');await db.outboxMessage.update({where:{id:current.id},data:{lockedUntil:new Date(Date.now()+60000)}});await assert.rejects(()=>operateEmail(db,owner,{messageId:blocked.id,revision:blocked.revision,action:'RESEND',reason:'Lease must remain protected',confirmed:true,acknowledgeDuplicate:true}),e=>e instanceof AppError&&e.code==='EMAIL_IN_FLIGHT');await db.outboxMessage.update({where:{id:current.id},data:{lockedUntil:null}});
+   });
+   await t.test('paid merch/fulfilment and table events queue once; financial holds prevent confirmation delivery',async()=>{
+    const product=await db.merchProduct.create({data:{slug:'notification-tee',name:'Notification Tee',kind:'TEE',description:'Synthetic',priceMinor:5000000,active:true,variants:{create:{label:'M',capacity:5}}},include:{variants:true}});const buyer={subject:'notification-buyer',email:'notification-buyer@example.com'};const order=await reserveMerch(db,buyer,{buyerName:'Notification Buyer',phone:'+2348000000000',fulfilment:'PICKUP',idempotencyKey:randomUUID(),items:[{variantId:product.variants[0].id,quantity:1}]},'test');const paymentGateway:Gateway={domain:'test',initialize:async()=>{throw new Error('Not used');},verify:async reference=>({id:'199927361',domain:'test',status:'success',reference,amount:5000000,currency:'NGN',paid_at:new Date().toISOString(),customer:{email:buyer.email}})};await verifyMerch(db,order.payments[0].reference,buyer,paymentGateway);await verifyMerch(db,order.payments[0].reference,buyer,paymentGateway);await updateMerchFulfilment(db,owner,order.id,{revision:1,status:'READY',note:'Prepared synthetic pickup'});const merch=await db.merchOrder.findUniqueOrThrow({where:{id:order.id}});assert.equal(await db.outboxMessage.count({where:{deduplicationKey:`merch-paid:${merch.id}`}}),1);await db.merchOrder.update({where:{id:merch.id},data:{needsReconciliation:true,fulfilmentStatus:'PENDING'}});const before=calls.length;const result=await deliverNotifications(db,gateway);assert.equal(result.blocked,2);assert.equal(calls.length,before);await db.merchOrder.update({where:{id:merch.id},data:{needsReconciliation:false,fulfilmentStatus:merch.fulfilmentStatus}});
+    const table=await db.order.findFirstOrThrow({where:{status:'PAID',needsReconciliation:false,lines:{some:{tier:{code:{in:['engines','autobots','machineries']}}}},payments:{some:{domain:'test',status:'VERIFIED'}}},include:{event:true}});process.env.CONCERT_EVENT_SLUG=table.event.slug;await db.$transaction(tx=>queueOrderNotification(tx,'TABLE_CONFIRMED',table.id,'test'));assert.equal((await deliverNotifications(db,gateway)).sent,1);assert.ok(calls.at(-1)!.payload.text.includes('VIP parking'));assert.equal(calls.at(-1)!.payload.attachments.length,0);
+   });
+   await t.test('legacy ticket emails retain their initial key and confirmed resend uses a new generation within the unified budget',async()=>{
+    process.env.CONCERT_EVENT_SLUG='notification-ticket-resend';process.env.TICKET_SALES_ENABLED='true';const concert=await db.event.create({data:{slug:concertSlug(),name:'Email Ticket Test',dateLocal:'2026-12-20',salesEnabled:true}});await db.ticketTier.create({data:{eventId:concert.id,code:'regular',name:'Regular',priceMinor:2000000,capacity:5,active:true}});const buyer={subject:'email-ticket-buyer',email:'email-ticket-buyer@example.com'},order=await reserveOrder(db,buyer,{tierCode:'regular',quantity:1,buyerName:'Email Ticket Buyer',idempotencyKey:randomUUID()},'test');const paymentGateway:Gateway={domain:'test',initialize:async()=>{throw new Error('Not used');},verify:async reference=>({id:'128991782',domain:'test',status:'success',reference,amount:2000000,currency:'NGN',paid_at:new Date().toISOString(),customer:{email:buyer.email}})};await verifyPayment(db,order.payments[0].reference,buyer,paymentGateway);
+    const keys:string[]=[];const sender=async(payload:EmailPayload,key:string)=>{keys.push(key);assert.equal(payload.to[0],buyer.email);assert.equal(payload.attachments.length,1);return 'mock-ticket-'+keys.length;};assert.equal((await deliverEmails(db,sender,1)).sent,1);const message=await db.outboxMessage.findUniqueOrThrow({where:{deduplicationKey:`tickets:${order.id}`}});assert.equal(keys[0],`ticket-email:${message.id}`);await assert.rejects(()=>operateEmail(db,owner,{messageId:message.id,revision:1,action:'RETRY',reason:'Sent message must use resend',confirmed:true}),e=>e instanceof AppError&&e.code==='RESEND_REQUIRED');await operateEmail(db,owner,{messageId:message.id,revision:1,action:'RESEND',reason:'Confirmed replacement copy request',confirmed:true,acknowledgeDuplicate:true});assert.equal((await deliverEmails(db,sender,1)).sent,1);assert.equal(keys[1],`ticket-email:${message.id}:g2`);
+   });
+   await t.test('admin queue redacts encrypted snapshots/recipients and API requires session/origin/confirmed actions',async()=>{
+    const view=await emailOverview(db,owner,emailFilters.parse({status:'ALL'}));assert.ok(view.messages.length);assert.ok(!JSON.stringify(view).includes('notificationSnapshot'));assert.ok(!JSON.stringify(view).includes(rep.email));assert.ok(!JSON.stringify(view).includes('encryptedDeliveryPayload'));
+    const api=await import('../../src/app/api/admin/emails/route');assert.equal((await api.GET(new Request('http://localhost:3000/api/admin/emails'))).status,401);const cookie=`${cookieName('session')}=${await seal(owner,'session',3600)}`;assert.equal((await api.POST(new Request('http://localhost:3000/api/admin/emails',{method:'POST',headers:{cookie,origin:'https://wrong.example','content-type':'application/json'},body:JSON.stringify({})}))).status,403);const audit=await auditHistory(db,owner,{action:'EMAIL_RESEND_REQUESTED'});assert.ok(audit.records.length);assert.equal(audit.records[0].metadata.possibleDuplicate,true);
+   });
+   process.env.NOTIFICATIONS_ENABLED='false';
+  });
+  await t.test('new organizer pages retain safe sign-in return paths without allowing external or query redirects',async()=>{
+   const {beginSignIn}=await import('../../src/server/auth');
+   for(const target of ['/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','https://evil.example','//evil.example','/admin/emails?next=https://evil.example']){const response=await beginSignIn(target),cookie=response.headers.get('set-cookie')!.split(';')[0].split('=').slice(1).join('='),flow=await unseal(cookie,'flow');assert.equal(flow.returnTo,target.startsWith('/admin/')&&!target.includes('?')?target:'/kala-games');assert.equal(new URL(response.headers.get('location')!).origin,new URL(process.env.AUTH_AUTHORIZATION_URL!).origin);}
   });
   await t.test('persistent account quota blocks the 61st request',async()=>{for(let i=0;i<60;i++) await rateLimit(db,'quota-test');await assert.rejects(()=>rateLimit(db,'quota-test'),e=>e instanceof AppError&&e.status===429);});
  }finally{

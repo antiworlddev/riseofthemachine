@@ -1,0 +1,7 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {addSportsInput,representativeInput,transferInput} from '../src/server/kala-teams';
+test('additional sports require bounded unique codes and a team revision',()=>{assert.ok(addSportsInput.safeParse({revision:1,sportCodes:['basketball']}).success);for(const data of [{revision:1,sportCodes:[]},{revision:0,sportCodes:['football']},{revision:1,sportCodes:['football','football']},{revision:1,sportCodes:['football'],representativeId:randomUUID()}])assert.ok(!addSportsInput.safeParse(data).success);});
+test('representative profile cannot forge verified identity',()=>{assert.ok(representativeInput.safeParse({name:'New Rep',phone:'+2348000000000'}).success);assert.ok(!representativeInput.safeParse({name:'New Rep',phone:'+2348000000000',email:'forged@example.com'}).success);});
+test('transfers require explicit confirmation, current ownership and the previewed verified account',()=>{const input={teamId:randomUUID(),revision:1,currentRepresentativeId:randomUUID(),newRepresentativeId:randomUUID(),newEmail:'new@example.com',reason:'Organizer confirmed change',confirmed:true};assert.ok(transferInput.safeParse(input).success);for(const patch of [{confirmed:false},{newEmail:undefined},{currentRepresentativeId:undefined},{revision:0},{reason:''}])assert.ok(!transferInput.safeParse({...input,...patch}).success);});

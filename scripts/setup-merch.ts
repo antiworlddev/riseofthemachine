@@ -17,7 +17,7 @@ export async function configureMerchStock(db: PrismaClient, requestedCapacity: n
    ORDER BY id FOR UPDATE`;
   if(variants.some(v=>capacity<v.reserved+v.sold))throw new Error('Capacity cannot be below reserved plus sold.');
   await tx.merchVariant.updateMany({where:{id:{in:variants.map(v=>v.id)}},data:{capacity}});
-  await tx.merchProduct.updateMany({where:{id:{in:productIds}},data:{active:open&&capacity>0}});
+  await tx.merchProduct.updateMany({where:{id:{in:productIds}},data:{active:open&&capacity>0,revision:{increment:1}}});
   await tx.auditLog.create({data:{action:'MERCH_STOCK_CONFIGURED_BY_CLI',entityType:'MerchProduct',entityId:'catalog',metadata:{capacityPerVariant:capacity,open}}});
  },{maxWait:15000,timeout:60000});
 }

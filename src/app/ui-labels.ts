@@ -1,0 +1,1 @@
+export function displayLabel(value:string){const labels:Record<string,string>={ALL:'All',RESERVED:'Awaiting payment',RECONCILIATION:'Payment review',NEEDS_ATTENTION:'Needs attention',PICKUP:'Event pickup',DELIVERY:'Delivery',SUBMITTED:'Awaiting review'};return labels[value]??value.toLowerCase().replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());}

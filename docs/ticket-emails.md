@@ -55,3 +55,5 @@ For Vercel hosting and the protected HTTP scheduler endpoint, see [vercel-deploy
 ## Scheduled batch update
 
 The scheduled route now defaults to ten messages per invocation, capped by TICKET_EMAIL_BATCH_SIZE (1–25), and stops starting new messages after a cooperative 35-second budget. CLI calls still default to ten. Existing leases, encrypted snapshots, attempt limits and provider idempotency keys are retained. See vercel-deployment.md for daily/pro schedule configuration and backlog limitations.
+
+The existing cron and delivery script now process transactional table/merch/KALA notifications as well. Additional notifications require NOTIFICATIONS_ENABLED=true. Organizer operations are at /admin/emails. See notifications.md for migration, mode separation and retry/resend instructions.

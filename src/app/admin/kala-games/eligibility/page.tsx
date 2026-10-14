@@ -1,0 +1,3 @@
+import EligibilityAdmin from './eligibility-admin';
+export const metadata={title:'KALA eligibility | RISE OF THE MACHINE',robots:{index:false,follow:false}};
+export default function Page(){return <div className="app-page"><section className="registration-page"><p className="eyebrow">Organizer access</p><h1>KALA ELIGIBILITY<span className="red">.</span></h1><p><a href="/admin/kala-games">Roster and eligibility review</a> · <a href="/admin/kala-games/settings">Sports and player counts</a></p><p>Write the actual requirements for each sport. Enabling a policy requires every new roster submission to declare that all listed players qualify. Existing submissions keep their captured terms.</p><EligibilityAdmin/></section></div>;}

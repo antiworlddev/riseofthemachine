@@ -1,3 +1,4 @@
+import {queueOrderNotification} from './notifications';
 import {isTable,changeParkingStock,issueParking} from './table-stock';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {Prisma,type PrismaClient} from '@prisma/client';
@@ -87,6 +88,8 @@ export async function operatePayment(db:PrismaClient,identity:Identity,input:z.i
     await issueParking(tx,o.lines);
     if(o.lines.some(l=>!l.table))await tx.outboxMessage.create({data:{deduplicationKey:`tickets:${o.id}`,kind:'TICKETS_ISSUED',payload:{orderId:o.id}}});
    }else await tx.merchOrder.update({where:{id:o.id},data:update});
+   if(o.kind==='MERCH')await queueOrderNotification(tx,'MERCH_CONFIRMED',o.id,gateway.domain);
+   else if(o.lines.some(l=>l.table))await queueOrderNotification(tx,'TABLE_CONFIRMED',o.id,gateway.domain);
    await tx.auditLog.create({data:{actorId,action:'PAYMENT_RECONCILIATION_FULFILLED',entityType:input.kind,entityId:o.id,metadata:{reason:input.reason,reference:o.payment!.reference}}});return {resolved:true};
   }
   if(o.kind==='TICKET'&&(o.tableArrivedAt||await tx.admission.count({where:{ticket:{line:{orderId:o.id}}}})||await tx.parkingAdmission.count({where:{pass:{line:{orderId:o.id}}}})))throw new AppError(409,'ALREADY_ADMITTED','Admission or parking has been used. This refund requires separate support review.');

@@ -135,6 +135,8 @@ model Ticket {
   @@unique([orderLineId, ordinal])
 }
 model StaffUser {
+  revision Int @default(1)
+  eligibilityReviews EligibilitySubmission[]
   refunds PaymentRefund[]
   id String @id @default(uuid()) @db.Uuid
   authSubject String @unique
@@ -160,9 +162,11 @@ model Representative {
   email String @unique
   phone String
   verifiedAt DateTime? @db.Timestamptz(3)
+  eligibilitySubmissions EligibilitySubmission[]
   teams TeamRegistration[]
 }
 model TeamRegistration {
+  ownershipRevision Int @default(1)
   id String @id @default(uuid()) @db.Uuid
   eventId String @db.Uuid
   representativeId String @db.Uuid
@@ -179,6 +183,11 @@ model TeamRegistration {
   @@index([representativeId])
 }
 model Competition {
+  tournament Tournament?
+  eligibilityEnabled Boolean @default(false)
+  eligibilityRevision Int @default(1)
+  eligibilityRequirements String?
+  eligibilityEvidenceRequired Boolean @default(false)
   id String @id @default(uuid()) @db.Uuid
   eventId String @db.Uuid
   sportCode String
@@ -191,6 +200,10 @@ model Competition {
   @@unique([id, eventId])
 }
 model SportRoster {
+  tournamentEntries TournamentEntry[]
+  currentEligibilityId String? @unique @db.Uuid
+  currentEligibility EligibilitySubmission? @relation("CurrentEligibility",fields:[currentEligibilityId],references:[id],onDelete:Restrict)
+  eligibilityHistory EligibilitySubmission[] @relation("EligibilityHistory")
   id String @id @default(uuid()) @db.Uuid
   teamId String @db.Uuid
   competitionId String @db.Uuid
@@ -218,6 +231,11 @@ model RosterMember {
   @@unique([rosterId, jerseyNumber])
 }
 model OutboxMessage {
+  revision Int @default(1)
+  deliveryGeneration Int @default(1)
+  deliveryMode String?
+  scopeSlug String?
+  notificationSnapshot String?
   id String @id @default(uuid()) @db.Uuid
   deduplicationKey String @unique
   kind String
@@ -245,6 +263,9 @@ model AuditLog {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   actor StaffUser? @relation(fields: [actorId], references: [id], onDelete: Restrict)
   @@index([entityType, entityId, createdAt])
+  @@index([createdAt, id])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
 }
 
 model TeamOption {
@@ -276,6 +297,8 @@ enum MerchFulfilmentStatus {
   COMPLETED
 }
 model MerchProduct {
+  revision Int @default(1)
+  imageUrl String?
   id String @id @default(uuid()) @db.Uuid
   slug String @unique
   name String
@@ -286,6 +309,7 @@ model MerchProduct {
   variants MerchVariant[]
 }
 model MerchVariant {
+  enabled Boolean @default(true)
   id String @id @default(uuid()) @db.Uuid
   productId String @db.Uuid
   label String
@@ -327,6 +351,7 @@ model MerchOrder {
   lines MerchOrderLine[]
   payments MerchPayment[]
   @@index([buyerSubject,createdAt])
+  @@index([eventSlug,createdAt,id])
   @@index([status,expiresAt])
 }
 model MerchOrderLine {
@@ -415,4 +440,81 @@ model ParkingAdmission {
   scannedAt DateTime @default(now()) @db.Timestamptz(3)
   pass ParkingPass @relation(fields:[passId],references:[id],onDelete:Restrict)
   staff StaffUser @relation(fields:[staffId],references:[id],onDelete:Restrict)
+}
+
+model EligibilitySubmission {
+ id String @id @default(uuid()) @db.Uuid
+ rosterId String @db.Uuid
+ roster SportRoster @relation("EligibilityHistory",fields:[rosterId],references:[id],onDelete:Restrict)
+ currentFor SportRoster? @relation("CurrentEligibility")
+ representativeId String @db.Uuid
+ representative Representative @relation(fields:[representativeId],references:[id],onDelete:Restrict)
+ representativeName String
+ representativeEmail String
+ policyRevision Int
+ requirements String
+ evidenceRequired Boolean
+ response String
+ membersHash String @db.VarChar(64)
+ confirmed Boolean
+ submittedAt DateTime @default(now()) @db.Timestamptz(3)
+ decision String @default("PENDING")
+ reviewedAt DateTime? @db.Timestamptz(3)
+ reviewedBy String? @db.Uuid
+ reviewer StaffUser? @relation(fields:[reviewedBy],references:[id],onDelete:Restrict)
+ reviewNote String?
+ @@index([rosterId,submittedAt])
+}
+
+model Tournament {
+ id String @id @default(uuid()) @db.Uuid
+ competitionId String @unique @db.Uuid
+ competition Competition @relation(fields:[competitionId],references:[id],onDelete:Restrict)
+ format String
+ scoreLabel String
+ rules Json?
+ published Boolean @default(false)
+ revision Int @default(1)
+ drawnAt DateTime? @db.Timestamptz(3)
+ entries TournamentEntry[]
+ fixtures Fixture[]
+}
+model TournamentEntry {
+ tournamentId String @db.Uuid
+ rosterId String @db.Uuid
+ tournament Tournament @relation(fields:[tournamentId],references:[id],onDelete:Restrict)
+ roster SportRoster @relation(fields:[rosterId],references:[id],onDelete:Restrict)
+ teamName String
+ drawPosition Int
+ homeFixtures Fixture[] @relation("FixtureHome")
+ awayFixtures Fixture[] @relation("FixtureAway")
+ wins Fixture[] @relation("FixtureWinner")
+ @@id([tournamentId,rosterId])
+ @@unique([tournamentId,drawPosition])
+}
+model Fixture {
+ id String @id @default(uuid()) @db.Uuid
+ tournamentId String @db.Uuid
+ tournament Tournament @relation(fields:[tournamentId],references:[id],onDelete:Restrict)
+ round Int
+ slot Int
+ homeRosterId String? @db.Uuid
+ awayRosterId String? @db.Uuid
+ winnerRosterId String? @db.Uuid
+ home TournamentEntry? @relation("FixtureHome",fields:[tournamentId,homeRosterId],references:[tournamentId,rosterId],onDelete:Restrict)
+ away TournamentEntry? @relation("FixtureAway",fields:[tournamentId,awayRosterId],references:[tournamentId,rosterId],onDelete:Restrict)
+ winner TournamentEntry? @relation("FixtureWinner",fields:[tournamentId,winnerRosterId],references:[tournamentId,rosterId],onDelete:Restrict)
+ status String @default("SCHEDULED")
+ homeScore Int?
+ awayScore Int?
+ deciderNote String?
+ startsAt DateTime? @db.Timestamptz(3)
+ venue String?
+ revision Int @default(1)
+ nextFixtureId String? @db.Uuid
+ nextSide String?
+ next Fixture? @relation("Bracket",fields:[nextFixtureId],references:[id],onDelete:Restrict)
+ predecessors Fixture[] @relation("Bracket")
+ @@unique([tournamentId,round,slot])
+ @@unique([nextFixtureId,nextSide])
 }

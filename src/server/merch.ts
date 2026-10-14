@@ -1,3 +1,5 @@
+import {queueOrderNotification} from './notifications';
+import {merchOrderOverview,merchOrderFilters} from './merch-order-tools';
 import {merchItems,pricesHash} from './merch-cart';
 import {readMerchQuote,deliveryTerms} from './shipping';
 export {deliveryTerms} from './shipping';
@@ -25,7 +27,7 @@ export async function merchCatalog(db:PrismaClient){
  let configured=true;try{paystackGateway();}catch{configured=false;}
  const products=await db.merchProduct.findMany({orderBy:{slug:'asc'},include:{variants:{orderBy:{label:'asc'}}}});
  const shippingRates=await db.shippingRate.findMany({where:{eventSlug:concertSlug(),enabled:true},orderBy:{state:'asc'},select:{id:true,state:true,feeMinor:true,note:true,revision:true}});
- return {shippingRates,salesOpen:configured&&process.env.MERCH_SALES_ENABLED==='true',deliveryTerms,products:products.map(p=>({id:p.id,name:p.name,description:p.description,kind:p.kind,priceMinor:p.priceMinor,variants:p.variants.map(v=>({id:v.id,label:v.label,available:p.active&&v.capacity-v.reserved-v.sold>0}))}))};
+ return {shippingRates,salesOpen:configured&&process.env.MERCH_SALES_ENABLED==='true',deliveryTerms,products:products.map(p=>({id:p.id,name:p.name,description:p.description,kind:p.kind,imageUrl:p.imageUrl,priceMinor:p.priceMinor,variants:p.variants.map(v=>({id:v.id,label:v.label,available:p.active&&v.enabled&&v.capacity-v.reserved-v.sold>0}))}))};
 }
 async function release(tx:Prisma.TransactionClient,order:{id:string;lines:{variantId:string;quantity:number}[]}){
  for(const l of [...order.lines].sort((a,b)=>a.variantId.localeCompare(b.variantId))){await tx.$queryRaw`SELECT id FROM "MerchVariant" WHERE id=${l.variantId}::uuid FOR UPDATE`;await tx.merchVariant.update({where:{id:l.variantId},data:{reserved:{decrement:l.quantity}}});}
@@ -63,7 +65,7 @@ export async function reserveMerch(db:PrismaClient,identity:Identity,input:z.inf
   for(const item of normalized.items){
    await tx.$queryRaw`SELECT id FROM "MerchVariant" WHERE id=${item.variantId}::uuid FOR UPDATE`;
    const variant=await tx.merchVariant.findUnique({where:{id:item.variantId},include:{product:true}});
-   if(!variant?.product.active)throw new AppError(409,'UNAVAILABLE','A cart item is unavailable.');
+   if(!variant?.product.active||!variant.enabled)throw new AppError(409,'UNAVAILABLE','A cart item is unavailable.');
    if(variant.capacity-variant.reserved-variant.sold<item.quantity)throw new AppError(409,'SOLD_OUT','Not enough stock for a cart item.');
    total+=variant.product.priceMinor*item.quantity;lines.push({variantId:variant.id,productName:variant.product.name,variantLabel:variant.label,quantity:item.quantity,unitPriceMinor:variant.product.priceMinor});
    await tx.merchVariant.update({where:{id:variant.id},data:{reserved:{increment:item.quantity}}});
@@ -106,12 +108,13 @@ export async function verifyMerch(db:PrismaClient,reference:string,identity?:Ide
   if(order.needsReconciliation||order.status!=='RESERVED'||order.expiresAt<=new Date()||paidAt>order.expiresAt){if(order.status==='RESERVED')await release(tx,order);await tx.merchOrder.update({where:{id:order.id},data:{needsReconciliation:true}});if(!order.needsReconciliation)await tx.auditLog.create({data:{action:'MERCH_LATE_PAYMENT_REVIEW',entityType:'MerchOrder',entityId:order.id}});return {status:order.status==='RESERVED'?'EXPIRED':order.status,needsReconciliation:true};}
   for(const l of [...order.lines].sort((a,b)=>a.variantId.localeCompare(b.variantId))){await tx.$queryRaw`SELECT id FROM "MerchVariant" WHERE id=${l.variantId}::uuid FOR UPDATE`;await tx.merchVariant.update({where:{id:l.variantId},data:{reserved:{decrement:l.quantity},sold:{increment:l.quantity}}});}
   await tx.merchOrder.update({where:{id:order.id},data:{status:'PAID',paidAt}});
+  await queueOrderNotification(tx,'MERCH_CONFIRMED',order.id,attempt.domain as 'test'|'live');
   await tx.auditLog.create({data:{action:'MERCH_ORDER_PAID',entityType:'MerchOrder',entityId:order.id}});return {status:'PAID',needsReconciliation:false};
  },options);
 }
 const publicSelect={shippingFeeMinor:true,shippingSnapshot:true,refund:{select:{status:true,amountMinor:true,currency:true}},id:true,buyerName:true,phone:true,fulfilment:true,address:true,deliveryTerms:true,status:true,totalMinor:true,createdAt:true,expiresAt:true,needsReconciliation:true,fulfilmentStatus:true,trackingNote:true,revision:true,lines:{select:{productName:true,variantLabel:true,quantity:true,unitPriceMinor:true}},payments:{select:{reference:true,domain:true,status:true,authorizationUrl:true}}} satisfies Prisma.MerchOrderSelect;
 export async function myMerchOrders(db:PrismaClient,identity:Identity){const orders=await db.merchOrder.findMany({where:{buyerSubject:identity.subject,eventSlug:concertSlug()},orderBy:{createdAt:'desc'},take:50,select:publicSelect});return orders.map(o=>({...o,payments:o.payments.map(p=>({...p,authorizationUrl:o.status==='RESERVED'&&o.expiresAt>new Date()&&!o.needsReconciliation?p.authorizationUrl:null}))}));}
-export async function adminMerchOrders(db:PrismaClient,identity:Identity,mode:'test'|'live',before?:string){await requireAdmin(db,identity);const found=await db.merchOrder.findMany({where:{eventSlug:concertSlug(),payments:{some:{domain:mode}},...(before?{id:{lt:before}}:{})},orderBy:{id:'desc'},take:51,select:{...publicSelect,buyerEmail:true,payments:{select:{reference:true,domain:true,status:true}}}});return {orders:found.slice(0,50),nextCursor:found.length>50?found[49].id:null};}
+export async function adminMerchOrders(db:PrismaClient,identity:Identity,mode:'test'|'live',before?:string){return merchOrderOverview(db,identity,merchOrderFilters.parse({mode,before}));}
 export async function updateMerchFulfilment(db:PrismaClient,identity:Identity,id:string,input:z.infer<typeof fulfilmentInput>){
  return db.$transaction(async tx=>{
   const staff=await tx.$queryRaw<{id:string}[]>`SELECT id FROM "StaffUser" WHERE "authSubject"=${identity.subject} AND enabled=true AND role='ADMIN' FOR SHARE`;if(!staff.length)throw new AppError(403,'ADMIN_REQUIRED','Organizer access required.');
@@ -123,6 +126,7 @@ export async function updateMerchFulfilment(db:PrismaClient,identity:Identity,id
   if(valid[o.fulfilmentStatus as keyof typeof valid]!==input.status)throw new AppError(409,'INVALID_TRANSITION','Use the next fulfilment step for this order.');
   if(input.status==='DISPATCHED'&&!input.note)throw new AppError(400,'NOTE_REQUIRED','Add courier/tracking details and confirm any legacy delivery arrangements.');
   const updated=await tx.merchOrder.update({where:{id},data:{fulfilmentStatus:input.status,trackingNote:input.note||o.trackingNote,revision:{increment:1}},select:{revision:true}});
+  await queueOrderNotification(tx,'MERCH_FULFILMENT',id,o.payments.find(p=>p.status==='VERIFIED')!.domain as 'test'|'live');
   await tx.auditLog.create({data:{actorId:staff[0].id,action:'MERCH_FULFILMENT_UPDATED',entityType:'MerchOrder',entityId:id,metadata:{from:o.fulfilmentStatus,to:input.status}}});return updated;
  },options);
 }

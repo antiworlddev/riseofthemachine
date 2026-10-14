@@ -25,7 +25,7 @@ export async function createMerchQuote(db:PrismaClient,identity:Identity,input:z
   const ids=await tx.merchVariant.findMany({where:{id:{in:input.items.map(i=>i.variantId)}},select:{productId:true}});
   for(const id of [...new Set(ids.map(v=>v.productId))].sort())await tx.$queryRaw`SELECT id FROM "MerchProduct" WHERE id=${id}::uuid FOR SHARE`;
   const variants=await tx.merchVariant.findMany({where:{id:{in:input.items.map(i=>i.variantId)}},include:{product:true}});
-  const lines=input.items.map(i=>{const v=variants.find(v=>v.id===i.variantId);if(!v?.product.active||v.capacity-v.reserved-v.sold<i.quantity)throw new AppError(409,'SOLD_OUT','A cart item is unavailable. Update your bag before requesting a quote.');return {variantId:v.id,quantity:i.quantity,unitPriceMinor:v.product.priceMinor,productName:v.product.name,variantLabel:v.label};});
+  const lines=input.items.map(i=>{const v=variants.find(v=>v.id===i.variantId);if(!v?.product.active||!v.enabled||v.capacity-v.reserved-v.sold<i.quantity)throw new AppError(409,'SOLD_OUT','A cart item is unavailable. Update your bag before requesting a quote.');return {variantId:v.id,quantity:i.quantity,unitPriceMinor:v.product.priceMinor,productName:v.product.name,variantLabel:v.label};});
   const subtotalMinor=lines.reduce((n,l)=>n+l.quantity*l.unitPriceMinor,0),shippingFeeMinor=rate?.feeMinor??0,totalMinor=subtotalMinor+shippingFeeMinor;
   if(!Number.isSafeInteger(totalMinor)||totalMinor<=0||totalMinor>2147483647)throw new AppError(400,'INVALID_TOTAL','Order total is invalid.');
   return {lines,subtotalMinor,shippingFeeMinor,totalMinor,rate};

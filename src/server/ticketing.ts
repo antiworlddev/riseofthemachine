@@ -1,3 +1,4 @@
+import {queueOrderNotification} from './notifications';
 import {tablePackages,isTable,changeParkingStock,issueParking} from './table-stock';
 import {emailStatuses} from './ticket-emails';
 import { createHash,randomBytes,randomUUID } from 'node:crypto';
@@ -108,6 +109,7 @@ export async function verifyPayment(db:PrismaClient,reference:string,identity?:I
   await changeParkingStock(tx,order.eventId,order.lines.reduce((n,l)=>n+l.parkingQuantity,0),'SELL');
   await issueParking(tx,order.lines);
   if(order.lines.some(l=>!isTable(l.tier.code)))await tx.outboxMessage.create({data:{deduplicationKey:`tickets:${order.id}`,kind:'TICKETS_ISSUED',payload:{orderId:order.id}}});
+  if(order.lines.some(l=>isTable(l.tier.code)))await queueOrderNotification(tx,'TABLE_CONFIRMED',order.id,attempt.domain as 'test'|'live');
   await tx.auditLog.create({data:{action:'ORDER_PAID',entityType:'Order',entityId:order.id,metadata:{paymentAttemptId:attempt.id}}});return {orderId:order.id,status:'PAID',needsReconciliation:order.needsReconciliation};
  },txOptions);
 }

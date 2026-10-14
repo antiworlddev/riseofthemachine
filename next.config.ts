@@ -7,7 +7,7 @@ const config: NextConfig = {
       { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
       { key: 'X-Frame-Options', value: 'DENY' },
       { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-    ] }, {source:'/staff/check-in',headers:[{key:'Permissions-Policy',value:'camera=(self), microphone=(), geolocation=()'}]}];
+    ] }, ...['/staff/check-in','/staff/parking'].map(source=>({source,headers:[{key:'Permissions-Policy',value:'camera=(self), microphone=(), geolocation=()'}]}))];
   },
 };
 export default config;

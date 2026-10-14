@@ -6,7 +6,7 @@ import {decryptTicket,encryptTicket,requireTicketKey} from './ticket-tokens';
 import {concertSlug} from './ticketing';
 export type EmailPayload={from:string;to:string[];subject:string;html:string;text:string;attachments:{filename:string;content:string}[]};
 export type EmailGateway=(payload:EmailPayload,key:string)=>Promise<string>;
-class DeliveryError extends Error{constructor(public code:string,public permanent=false){super(code);}}
+export class DeliveryError extends Error{constructor(public code:string,public permanent=false){super(code);}}
 export const resendGateway:EmailGateway=async(payload,key)=>{
  let response:Response;try{response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});}catch{throw new DeliveryError('PROVIDER_UNAVAILABLE');}
  if(!response.ok)throw new DeliveryError(`PROVIDER_HTTP_${response.status}`,response.status<500&&response.status!==429&&response.status!==408);
@@ -14,7 +14,7 @@ export const resendGateway:EmailGateway=async(payload,key)=>{
  const parsed=z.object({id:z.string().min(1).max(200)}).safeParse(data);if(!parsed.success)throw new DeliveryError('INVALID_PROVIDER_RESPONSE');return parsed.data.id;
 };
 const escape=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-function configuration(){
+export function emailConfiguration(){
  if(process.env.EMAIL_DELIVERY_ENABLED!=='true')throw new Error('Set EMAIL_DELIVERY_ENABLED=true to run ticket email delivery.');
  const from=process.env.TICKET_EMAIL_FROM??'',mode=process.env.TICKET_EMAIL_MODE??'test';
  if(!z.email().safeParse(from).success||!/^re_\S+$/.test(process.env.RESEND_API_KEY??'')||!['test','live'].includes(mode))throw new Error('Configure RESEND_API_KEY, TICKET_EMAIL_FROM and TICKET_EMAIL_MODE.');
@@ -25,7 +25,7 @@ export async function emailStatuses(db:PrismaClient,ids:string[]){
  return new Map(messages.map(m=>[m.deduplicationKey.slice(8),{status:m.deliveredAt?'SENT':m.blocked?'NEEDS_ATTENTION':m.attempts?'RETRYING':'QUEUED',attempts:m.attempts,sentAt:m.deliveredAt}]));
 }
 export async function deliverTicketEmails(db:PrismaClient,gateway:EmailGateway=resendGateway,limit=10,deadlineAt=Infinity){
- const config=configuration(),result={sent:0,retrying:0,blocked:0};
+ const config=emailConfiguration(),result={sent:0,retrying:0,blocked:0};
  for(let i=0;i<Math.min(50,Math.max(1,limit));i++){
   if(Date.now()>=deadlineAt)break;
   const lease=randomUUID();
@@ -52,7 +52,7 @@ export async function deliverTicketEmails(db:PrismaClient,gateway:EmailGateway=r
     await db.outboxMessage.updateMany({where:{id:message.id,leaseToken:lease},data:{encryptedDeliveryPayload:encryptTicket(JSON.stringify(payload),`mail:${message.id}`)}});
    }
    const claimed=await db.outboxMessage.updateMany({where:{id:message.id,leaseToken:lease,lockedUntil:{gt:new Date()}},data:{attempts:{increment:1},firstAttemptAt:message.firstAttemptAt??new Date()}});if(!claimed.count)continue;
-   attempted=true;const providerMessageId=await gateway(payload,`ticket-email:${message.id}`);
+   attempted=true;const providerMessageId=await gateway(payload,message.deliveryGeneration===1?`ticket-email:${message.id}`:`ticket-email:${message.id}:g${message.deliveryGeneration}`);
    await db.outboxMessage.updateMany({where:{id:message.id,leaseToken:lease},data:{providerMessageId,deliveredAt:new Date(),encryptedDeliveryPayload:null,leaseToken:null,lockedUntil:null,lastErrorCode:null}});result.sent++;
   }catch(error){
    const attempts=message.attempts+(attempted?1:0),blocked=error instanceof DeliveryError?error.permanent||attempts>=8:!attempted;

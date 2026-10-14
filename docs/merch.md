@@ -57,3 +57,5 @@ Open `/admin/merch/inventory` from Merch operations. Each product shows size, av
 ## Automated shipping update
 
 New delivery checkout now collects the configured delivery fee with merchandise through Paystack; configure destinations at /admin/merch/shipping. The old separately quoted flow described above applies only to orders made before this update. New order receipts retain a shipping snapshot, and full pre-dispatch refunds include paid shipping. Event pickup remains free. See shipping-payments.md for schema/migration installation, pricing rules and acceptance.
+
+Catalogue editing, variant availability and filtered order/CSV tools are now implemented. See merch-catalog-orders.md for deployment and operational instructions.

@@ -8,7 +8,7 @@ const capacity=z.number().int().min(0).max(1000000);
 export const inventoryInput=z.object({productId:z.uuid(),expectedActive:z.boolean(),active:z.boolean(),variants:z.array(z.object({id:z.uuid(),expectedCapacity:capacity,capacity}).strict()).min(1).max(100)}).strict().refine(v=>new Set(v.variants.map(x=>x.id)).size===v.variants.length,'Duplicate variant.');
 export async function merchInventory(db:PrismaClient,identity:Identity){
  await requireAdmin(db,identity);
- const products=await db.merchProduct.findMany({orderBy:{slug:'asc'},select:{id:true,name:true,priceMinor:true,active:true,variants:{orderBy:{label:'asc'},select:{id:true,label:true,capacity:true,reserved:true,sold:true}}}});
+ const products=await db.merchProduct.findMany({orderBy:{slug:'asc'},select:{id:true,name:true,priceMinor:true,active:true,variants:{orderBy:{label:'asc'},select:{id:true,label:true,enabled:true,capacity:true,reserved:true,sold:true}}}});
  return {products:products.map(p=>({...p,variants:p.variants.map(v=>({...v,available:v.capacity-v.reserved-v.sold}))})),salesEnabled:process.env.MERCH_SALES_ENABLED==='true'};
 }
 export async function updateInventory(db:PrismaClient,identity:Identity,input:z.infer<typeof inventoryInput>){
@@ -24,7 +24,7 @@ export async function updateInventory(db:PrismaClient,identity:Identity,input:z.
   if(input.active){paystackConfig();if(process.env.MERCH_SALES_ENABLED!=='true')throw new AppError(409,'MERCH_CLOSED','Enable MERCH_SALES_ENABLED before opening product sales.');}
   const rows=input.variants.map(v=>Prisma.sql`(${v.id}::uuid,${v.capacity}::integer)`);
   await tx.$executeRaw`UPDATE "MerchVariant" v SET capacity=x.capacity FROM (VALUES ${Prisma.join(rows)}) AS x(id,capacity) WHERE v.id=x.id`;
-  await tx.merchProduct.update({where:{id:product.id},data:{active:input.active}});
+  await tx.merchProduct.update({where:{id:product.id},data:{active:input.active,revision:{increment:1}}});
   await tx.auditLog.create({data:{actorId:staff[0].id,action:'MERCH_INVENTORY_UPDATED',entityType:'MerchProduct',entityId:product.id,metadata:{fromActive:product.active,toActive:input.active,variants:input.variants.map(v=>({id:v.id,from:v.expectedCapacity,to:v.capacity}))}}});
   return {saved:true};
  },{maxWait:10000,timeout:15000});

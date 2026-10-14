@@ -1,0 +1,3 @@
+ALTER TABLE "OutboxMessage" ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "deliveryGeneration" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "deliveryMode" TEXT, ADD COLUMN "scopeSlug" TEXT, ADD COLUMN "notificationSnapshot" TEXT;
+ALTER TABLE "OutboxMessage" ADD CONSTRAINT "outbox_revision_generation" CHECK (revision > 0 AND "deliveryGeneration" > 0), ADD CONSTRAINT "outbox_delivery_mode" CHECK ("deliveryMode" IS NULL OR "deliveryMode" IN ('test','live'));
+CREATE INDEX "outbox_notification_queue" ON "OutboxMessage"(kind,"deliveryMode","nextAttemptAt") WHERE "deliveredAt" IS NULL AND NOT blocked;

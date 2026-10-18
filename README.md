@@ -1,3 +1,5 @@
+> **Prelaunch + Mailjet update:** Start with [PRELAUNCH_DEPLOYMENT.md](PRELAUNCH_DEPLOYMENT.md) and [MAILJET_SETUP.md](MAILJET_SETUP.md). Keep your existing production environment and Pro cron configuration.
+
 # RISE OF THE MACHINE — Phase 1 application
 
 Next.js App Router + TypeScript + PostgreSQL/Prisma. Contains the database foundation, hosted OIDC sign-in adapter and free KALA GAMES registration/review/settings, plus concert ticket checkout and verified Paystack ticket issuance with a temporary responsive interface.

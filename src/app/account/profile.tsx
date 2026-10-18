@@ -1,0 +1,7 @@
+'use client';
+import {useEffect,useState,type FormEvent} from 'react';
+import {ticketApi} from '../tickets/ticket-checkout';
+export default function Profile(){const [name,setName]=useState(''),[phone,setPhone]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+ useEffect(()=>{void ticketApi<{profile:{name:string;phone:string}|null}>('/api/kala/representative').then(d=>{if(d.profile){setName(d.profile.name);setPhone(d.profile.phone);}}).catch(e=>setError(e.message));},[]);
+ async function save(e:FormEvent){e.preventDefault();setBusy(true);setError('');try{await ticketApi('/api/kala/representative',{method:'POST',body:JSON.stringify({name,phone})});setMessage('Profile saved. An organizer can now grant your account staff access.');}catch(e){setError(e instanceof Error?e.message:'Unable to save profile.');}finally{setBusy(false);}}
+ return <form className="panel" onSubmit={save}><a href="/api/auth/login?returnTo=%2Faccount">Sign in with your verified email</a><label>Name<input value={name} onChange={e=>setName(e.target.value)} required minLength={2} maxLength={120} autoComplete="name"/></label><label>Phone<input value={phone} onChange={e=>setPhone(e.target.value)} required type="tel" autoComplete="tel"/></label><button disabled={busy}>{busy?'Saving…':'Save profile'}</button>{error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}<p><a href="/admin">Open organizer dashboard →</a></p></form>;}

@@ -1,0 +1,3 @@
+import UnsubscribeForm from './unsubscribe-form';
+export const metadata={title:'Email preferences | RISE OF THE MACHINE',robots:{index:false,follow:false},referrer:'no-referrer' as const};
+export default async function Page({searchParams}:{searchParams:Promise<{token?:string}>}){const {token}=await searchParams;return <div className="app-page"><section className="registration-page"><h1>Email preferences.</h1><p>You can stop newsletter mails or all updates, including the event waitlist.</p><UnsubscribeForm token={typeof token==='string'?token:''}/><p><a href="/">← Back to the Machine</a></p></section></div>;}

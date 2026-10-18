@@ -1,3 +1,4 @@
+import {requirePublicLaunch} from './site-mode';
 import {Prisma,type PrismaClient} from '@prisma/client';
 import {z} from 'zod';
 import {AppError} from './errors';
@@ -14,6 +15,7 @@ export async function readMerchQuote(token:string,identity:Identity,items:{varia
  try{const quote=claims.parse(await unseal(token,'merch-quote'));if(quote.subject!==identity.subject||quote.eventSlug!==concertSlug()||quote.domain!==domain||quote.fulfilment!==fulfilment||quote.cartHash!==cartHash(items))throw new Error();return quote;}catch{throw new AppError(409,'QUOTE_INVALID','Your price quote changed or expired. Refresh the quote before checkout.');}
 }
 export async function createMerchQuote(db:PrismaClient,identity:Identity,input:z.infer<typeof quoteInput>,domain:'test'|'live'=paystackConfig().domain){
+ requirePublicLaunch();
  if(process.env.MERCH_SALES_ENABLED!=='true')throw new AppError(403,'MERCH_CLOSED','Merch sales are currently closed.');
  const details=await db.$transaction(async tx=>{
   let rate=null;

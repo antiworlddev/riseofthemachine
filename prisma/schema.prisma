@@ -518,3 +518,41 @@ model Fixture {
  @@unique([tournamentId,round,slot])
  @@unique([nextFixtureId,nextSide])
 }
+
+model Subscriber {
+ mailjetSyncPending Boolean @default(true)
+ mailjetRevision Int @default(1)
+ mailjetSyncedAt DateTime? @db.Timestamptz(3)
+ mailjetNextAttemptAt DateTime @default(now()) @db.Timestamptz(3)
+ mailjetAttempts Int @default(0)
+ mailjetLease String? @db.Uuid
+ mailjetLockedUntil DateTime? @db.Timestamptz(3)
+ mailjetLastError String? @db.VarChar(64)
+ mailjetSuppressedAt DateTime? @db.Timestamptz(3)
+ id String @id @default(uuid()) @db.Uuid
+ email String @unique @db.VarChar(254)
+ firstName String @db.VarChar(80)
+ waitlistAt DateTime? @db.Timestamptz(3)
+ waitlistUnsubscribedAt DateTime? @db.Timestamptz(3)
+ newsletterAt DateTime? @db.Timestamptz(3)
+ unsubscribedAt DateTime? @db.Timestamptz(3)
+ createdAt DateTime @default(now()) @db.Timestamptz(3)
+ updatedAt DateTime @updatedAt @db.Timestamptz(3)
+ consents SubscriberConsent[]
+ @@index([createdAt, id])
+}
+model SubscriberConsent {
+ id String @id @default(uuid()) @db.Uuid
+ subscriberId String @db.Uuid
+ subscriber Subscriber @relation(fields:[subscriberId],references:[id],onDelete:Cascade)
+ action String @db.VarChar(32)
+ source String @db.VarChar(32)
+ version String @db.VarChar(32)
+ createdAt DateTime @default(now()) @db.Timestamptz(3)
+ @@index([subscriberId,createdAt])
+}
+
+model MailjetEvent {
+ key String @id @db.VarChar(64)
+ createdAt DateTime @default(now()) @db.Timestamptz(3)
+}

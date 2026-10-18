@@ -9,7 +9,7 @@ const keys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const random = () => randomBytes(32).toString('base64url');
 function equal(a: string,b: string) { const x=Buffer.from(a),y=Buffer.from(b); return x.length===y.length && timingSafeEqual(x,y); }
 export async function beginSignIn(returnTo='/kala-games') {
- if(!['/','/kala-games','/tickets','/tickets/orders','/admin/kala-games','/admin','/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','/admin/kala-games/eligibility','/admin/kala-games/tournaments','/admin/kala-games/settings','/admin/kala-games/teams','/staff/check-in','/admin/tickets','/merch','/merch/orders','/admin/merch','/admin/merch/inventory','/admin/payments','/admin/merch/shipping','/admin/tables','/staff/parking'].includes(returnTo))returnTo='/kala-games';
+ if(!['/','/account','/admin/subscribers','/kala-games','/tickets','/tickets/orders','/admin/kala-games','/admin','/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','/admin/kala-games/eligibility','/admin/kala-games/tournaments','/admin/kala-games/settings','/admin/kala-games/teams','/staff/check-in','/admin/tickets','/merch','/merch/orders','/admin/merch','/admin/merch/inventory','/admin/payments','/admin/merch/shipping','/admin/tables','/staff/parking'].includes(returnTo))returnTo='/kala-games';
  const cfg = authConfig();
  const state=random(), nonce=random(), verifier=random();
  const flow = await seal({ state, nonce, verifier, returnTo },'flow',600);
@@ -43,7 +43,7 @@ export async function completeSignIn(request: Request) {
   const lifetime=Math.min(3600,(payload.exp??0)-Math.floor(Date.now()/1000));
   if(lifetime<=0) throw new Error('Expired identity');
   const session=await seal({subject,email},'session',lifetime);
-  const headers=new Headers({location:`${cfg.APP_ORIGIN}${['/','/kala-games','/tickets','/tickets/orders','/admin/kala-games','/admin','/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','/admin/kala-games/eligibility','/admin/kala-games/tournaments','/admin/kala-games/settings','/admin/kala-games/teams','/staff/check-in','/admin/tickets','/merch','/merch/orders','/admin/merch','/admin/merch/inventory','/admin/payments','/admin/merch/shipping','/admin/tables','/staff/parking'].includes(flow.returnTo??'')?flow.returnTo:'/kala-games'}`,'cache-control':'no-store'});
+  const headers=new Headers({location:`${cfg.APP_ORIGIN}${['/','/account','/admin/subscribers','/kala-games','/tickets','/tickets/orders','/admin/kala-games','/admin','/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','/admin/kala-games/eligibility','/admin/kala-games/tournaments','/admin/kala-games/settings','/admin/kala-games/teams','/staff/check-in','/admin/tickets','/merch','/merch/orders','/admin/merch','/admin/merch/inventory','/admin/payments','/admin/merch/shipping','/admin/tables','/staff/parking'].includes(flow.returnTo??'')?flow.returnTo:'/kala-games'}`,'cache-control':'no-store'});
   headers.append('set-cookie',setCookie('session',session,lifetime));
   headers.append('set-cookie',setCookie('flow','',0));
   return new Response(null,{status:303,headers});

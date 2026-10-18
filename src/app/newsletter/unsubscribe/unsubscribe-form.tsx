@@ -1,0 +1,6 @@
+'use client';
+import {useState} from 'react';
+export default function UnsubscribeForm({token}:{token:string}){const [scope,setScope]=useState('all'),[busy,setBusy]=useState(false),[done,setDone]=useState(false),[error,setError]=useState('');
+ async function save(){setBusy(true);setError('');try{const r=await fetch('/api/newsletter/unsubscribe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,scope})});const b=await r.json();if(!r.ok)throw new Error(b.error?.message||'Please try again.');setDone(true);}catch(e){setError(e instanceof Error?e.message:'Please try again.');}finally{setBusy(false);}}
+ if(!token)return <p>This link is missing its unsubscribe code. Use the link in an email from us.</p>;
+ return done?<p role="status">Your email preferences have been updated. {scope==='all'?'We’ve stopped newsletter and waitlist updates.':'We’ve stopped newsletter mails. Your waitlist updates stay active.'}</p>:<div className="panel"><label>Which emails would you like to stop?<select value={scope} disabled={busy} onChange={e=>setScope(e.target.value)}><option value="all">All newsletter and waitlist emails</option><option value="newsletter">Newsletter emails only</option></select></label><button disabled={busy} onClick={()=>void save()}>{busy?'Updating…':'Unsubscribe'}</button>{error&&<p role="alert">{error}</p>}</div>;}

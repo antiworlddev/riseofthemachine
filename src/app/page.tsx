@@ -1,7 +1,10 @@
+import Prelaunch from './prelaunch/prelaunch';
+import {prelaunch} from '@/server/site-mode';
+export const dynamic='force-dynamic';
 import Link from 'next/link';
 import Image from 'next/image';
 import TicketCheckout from './tickets/ticket-checkout';
-export default function Home() {return <>
+export default function Home() {if(prelaunch())return <Prelaunch/>;return <>
  <div className="hero"><div className="hero-bg"><Image src="/images/odumodublvck-live.jpg" alt="" fill preload sizes="(min-width: 900px) 65vw, 100vw"/></div><div className="wrap"><div className="hero-copy"><span className="eyebrow">ODUMODUBLVCK Live · Abuja</span><h1>Rise of<br/>the Machine.</h1><span className="date-chip"><span className="dot"/>20 December 2026</span><p className="lead">The music. The live experience. The city.</p><div className="btn-row"><a className="button" href="#tickets">Tickets &amp; tables ↗</a><a className="button secondary" href="#kala">Explore KALA GAMES ↗</a></div></div></div></div>
  <section id="tickets" className="home-section surface"><div className="wrap"><div className="section-head"><span className="eyebrow">20 December 2026 · Abuja</span><h2>Tickets &amp; tables</h2><p className="lead">ODUMODUBLVCK Live: Rise of the Machine</p></div><TicketCheckout returnTo="/"/></div></section>
  <section id="kala" className="home-section"><div className="wrap split"><div className="kala-intro"><span className="eyebrow">19 December 2026 · Monaliza, Abuja</span><h2>KALA GAMES 2026.</h2><p className="lead">One team. One representative. Your roster. Registration is free.</p><ol className="steps"><li>Sign in with a verified email</li><li>Choose your team and sports</li><li>Save and submit each roster for review</li></ol></div><div className="card"><span className="badge">Free registration</span><h3>Team registration</h3><p>Your university or team representative manages the players and submits each sport’s roster for organizer review.</p><Link href="/kala-games" className="button">Register or manage your team ↗</Link><p>Already submitted? View your review status and organizer feedback in your team account.</p></div></div></section>

@@ -1,3 +1,4 @@
+import {requirePublicLaunch} from './site-mode';
 import {queueOrderNotification} from './notifications';
 import {tablePackages,isTable,changeParkingStock,issueParking} from './table-stock';
 import {emailStatuses} from './ticket-emails';
@@ -24,6 +25,7 @@ export async function ticketCatalog(db:PrismaClient){
  return {event:{name:event.name,dateLocal:event.dateLocal},salesOpen:open,tiers:event.tiers.filter(t=>!isTable(t.code)).map(t=>({code:t.code,name:t.name,priceMinor:t.priceMinor,currency:t.currency,available:available(t)})),tables:tablePackages.map(p=>{const tier=event.tiers.find(t=>t.code===p.code);return {...p,price:p.priceMinor/100,parkingPerTable:tier?.parkingPerTable??null,available:!!tier&&available(tier)&&!!tier.parkingPerTable&&!!parking&&parking.parkingCapacity-parking.parkingReserved-parking.parkingSold>=tier.parkingPerTable,url:enquiry.success?`mailto:${enquiry.data}?subject=${encodeURIComponent(`RISE OF THE MACHINE — ${p.name} table enquiry`)}`:null};})};
 }
 export async function reserveOrder(db:PrismaClient,identity:Identity,input:z.infer<typeof checkoutInput>,domain:'test'|'live'){
+ requirePublicLaunch();
  if(process.env.TICKET_SALES_ENABLED!=='true')throw new AppError(403,'SALES_CLOSED','Ticket sales are currently closed.');
  const idempotencyKey=createHash('sha256').update(JSON.stringify([concertSlug(),identity.subject,input.idempotencyKey])).digest('hex');
  return db.$transaction(async tx=>{

@@ -1,3 +1,4 @@
+import {requirePublicLaunch} from './site-mode';
 import {queueOrderNotification} from './notifications';
 import {merchOrderOverview,merchOrderFilters} from './merch-order-tools';
 import {merchItems,pricesHash} from './merch-cart';
@@ -40,6 +41,7 @@ export async function expireMerch(db:PrismaClient,limit=25,deadlineAt=Infinity){
  for(const o of found){if(Date.now()>=deadlineAt)break;count+=await db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "MerchOrder" WHERE id=${o.id}::uuid FOR UPDATE`;const order=await tx.merchOrder.findUniqueOrThrow({where:{id:o.id},include:{lines:true}});if(order.status!=='RESERVED'||order.expiresAt>new Date())return 0;await release(tx,order);return 1;},options);}return count;
 }
 export async function reserveMerch(db:PrismaClient,identity:Identity,input:z.infer<typeof merchInput>,domain:'test'|'live'){
+ requirePublicLaunch();
  if(process.env.MERCH_SALES_ENABLED!=='true')throw new AppError(403,'MERCH_CLOSED','Merch sales are currently closed.');
  const {quoteToken,...body}=input;
  const normalized={...body,items:[...input.items].sort((a,b)=>a.variantId.localeCompare(b.variantId))};

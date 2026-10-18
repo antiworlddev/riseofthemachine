@@ -1,3 +1,4 @@
+import {requirePublicLaunch} from './site-mode';
 import { z } from 'zod';
 import { AppError } from './errors';
 const httpsUrl = z.url().refine(v => new URL(v).protocol === 'https:', 'HTTPS required');
@@ -23,6 +24,7 @@ export function authConfig() {
 }
 export function registrationOpen() { return process.env.KALA_REGISTRATION_ENABLED === 'true'; }
 export function requireRegistrationOpen() {
+ requirePublicLaunch();
   if (!registrationOpen()) throw new AppError(403, 'REGISTRATION_CLOSED', 'KALA GAMES registration is currently closed.');
 }
 export function kalaSlug() { return process.env.KALA_EVENT_SLUG || 'kala-games-2026'; }

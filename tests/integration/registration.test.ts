@@ -1,3 +1,5 @@
+import {syncMailjet,MailjetError,applyMailjetEvents,mailjetEventsInput} from '../../src/server/mailjet';
+import {subscribe,unsubscribe,signupInput,subscriberOverview,subscriberFilters,exportSubscribers,unsubscribeToken,retrySubscriberSync} from '../../src/server/subscribers';
 import {queueOrderNotification,deliverNotifications,queueNotification,deliverEmails} from '../../src/server/notifications';
 import {emailOverview,operateEmail,emailFilters} from '../../src/server/email-operations';
 import {adminCatalog,saveCatalog,catalogInput} from '../../src/server/merch-catalog-admin';
@@ -41,6 +43,7 @@ if(!/^rotm_test_[a-f0-9]{32}$/.test(schema)) throw new Error('Invalid isolated t
 const url=new URL(connection);url.searchParams.set('schema',schema);
 const admin=new PrismaClient({datasourceUrl:connection});
 const db=new PrismaClient({datasourceUrl:url.href});
+process.env.SITE_MODE='live';
 process.env.KALA_REGISTRATION_ENABLED='true';
 process.env.KALA_EVENT_SLUG='kala-games-integration';
 const owner={subject:'owner',email:'owner@example.com'},outsider={subject:'outsider',email:'outsider@example.com'};
@@ -1112,7 +1115,66 @@ test('registration transactions, ownership and race handling',async t=>{
   });
   await t.test('new organizer pages retain safe sign-in return paths without allowing external or query redirects',async()=>{
    const {beginSignIn}=await import('../../src/server/auth');
-   for(const target of ['/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','https://evil.example','//evil.example','/admin/emails?next=https://evil.example']){const response=await beginSignIn(target),cookie=response.headers.get('set-cookie')!.split(';')[0].split('=').slice(1).join('='),flow=await unseal(cookie,'flow');assert.equal(flow.returnTo,target.startsWith('/admin/')&&!target.includes('?')?target:'/kala-games');assert.equal(new URL(response.headers.get('location')!).origin,new URL(process.env.AUTH_AUTHORIZATION_URL!).origin);}
+   for(const target of ['/admin/staff','/admin/audit','/admin/emails','/admin/merch/catalog','/admin/subscribers','https://evil.example','//evil.example','/admin/emails?next=https://evil.example']){const response=await beginSignIn(target),cookie=response.headers.get('set-cookie')!.split(';')[0].split('=').slice(1).join('='),flow=await unseal(cookie,'flow');assert.equal(flow.returnTo,target.startsWith('/admin/')&&!target.includes('?')?target:'/kala-games');assert.equal(new URL(response.headers.get('location')!).origin,new URL(process.env.AUTH_AUTHORIZATION_URL!).origin);}
+  });
+  await t.test('fan signups merge lists without implicit newsletter consent; unsubscribe/resubscribe and consent history persist',async()=>{
+   process.env.SUBSCRIBER_TOKEN_KEY='e'.repeat(64);
+   const fan=(source:'waitlist'|'newsletter',newsletter:boolean)=>signupInput.parse({firstName:'Fan',email:' Fan@EXAMPLE.COM ',source,newsletter});
+   await subscribe(db,fan('waitlist',false));let row=await db.subscriber.findUniqueOrThrow({where:{email:'fan@example.com'}});assert.ok(row.waitlistAt);assert.equal(row.newsletterAt,null);
+   await Promise.all([subscribe(db,fan('newsletter',true)),subscribe(db,fan('waitlist',false))]);assert.equal(await db.subscriber.count({where:{email:row.email}}),1);
+   row=await db.subscriber.findUniqueOrThrow({where:{id:row.id}});assert.ok(row.newsletterAt);assert.equal(row.unsubscribedAt,null);
+   await unsubscribe(db,unsubscribeToken(row.id),'newsletter');let view=await subscriberOverview(db,owner,subscriberFilters.parse({list:'newsletter'}));assert.equal(view.counts.newsletter,0);assert.equal(view.counts.waitlist,1);
+   await subscribe(db,fan('waitlist',false));row=await db.subscriber.findUniqueOrThrow({where:{id:row.id}});assert.ok(row.unsubscribedAt,'waitlist signup cannot silently resubscribe newsletter');
+   await unsubscribe(db,unsubscribeToken(row.id),'all');view=await subscriberOverview(db,owner,subscriberFilters.parse({}));assert.equal(view.counts.waitlist,0);assert.equal(view.counts.newsletter,0);
+   await subscribe(db,fan('newsletter',true));view=await subscriberOverview(db,owner,subscriberFilters.parse({}));assert.equal(view.counts.waitlist,0);assert.equal(view.counts.newsletter,1);
+   assert.ok(await db.subscriberConsent.count({where:{subscriberId:row.id}})>=6);
+   await subscribe(db,{...fan('waitlist',true),email:'bot@example.com',website:'spam'});assert.equal(await db.subscriber.count({where:{email:'bot@example.com'}}),0);
+   await assert.rejects(()=>subscriberOverview(db,outsider,subscriberFilters.parse({})),e=>e instanceof AppError&&e.status===403);
+   const csv=await exportSubscribers(db,owner,'newsletter');assert.ok(csv.includes('fan@example.com'));assert.ok(csv.includes('/newsletter/unsubscribe?token='));assert.ok(!csv.includes('bot@example.com'));
+   assert.equal((await db.auditLog.findFirstOrThrow({where:{action:'SUBSCRIBERS_EXPORTED'}})).actorId,(await db.staffUser.findUniqueOrThrow({where:{authSubject:owner.subject}})).id);
+  });
+  await t.test('public signup API requires its own origin, saves centrally, and returns generic duplicate-safe success',async()=>{
+   const api=await import('../../src/app/api/subscribers/route');
+   const previous=process.env.DATABASE_URL;process.env.DATABASE_URL=url.href;
+   const request=(origin=process.env.APP_ORIGIN!)=>new Request(process.env.APP_ORIGIN+'/api/subscribers',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({firstName:'API Fan',email:'api-fan@example.com',source:'waitlist',newsletter:false})});
+   try{assert.equal((await api.POST(request('https://foreign.example'))).status,403);assert.equal((await api.POST(request())).status,200);assert.equal((await api.POST(request())).status,200);assert.equal(await db.subscriber.count({where:{email:'api-fan@example.com'}}),1);}finally{if(previous===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=previous;}
+  });
+  await t.test('Mailjet sync persists retries, preserves changes during an in-flight request and excludes suppressed fans',async()=>{
+   Object.assign(process.env,{MAILJET_ENABLED:'true',MAILJET_API_KEY:'mock-key',MAILJET_SECRET_KEY:'mock-secret',MAILJET_WAITLIST_LIST_ID:'123',MAILJET_NEWSLETTER_LIST_ID:'456'});
+   await db.subscriber.updateMany({data:{mailjetSyncPending:false}});
+   await subscribe(db,signupInput.parse({firstName:'Sync Fan',email:'sync-fan@example.com',source:'waitlist',newsletter:true}));
+   let fan=await db.subscriber.findUniqueOrThrow({where:{email:'sync-fan@example.com'}});
+   assert.deepEqual(await syncMailjet(db,async()=>{throw new MailjetError('MAILJET_HTTP_429');},1),{synced:0,retrying:1});
+   fan=await db.subscriber.findUniqueOrThrow({where:{id:fan.id}});assert.equal(fan.mailjetAttempts,1);assert.equal(fan.mailjetLastError,'MAILJET_HTTP_429');assert.equal(fan.mailjetSyncPending,true);assert.equal(fan.mailjetLease,null);
+   await db.subscriber.update({where:{id:fan.id},data:{mailjetNextAttemptAt:new Date(0)}});
+   await syncMailjet(db,async snapshot=>{await unsubscribe(db,unsubscribeToken(snapshot.id),'all');return {waitlistOptOut:false,newsletterOptOut:false};},1);
+   fan=await db.subscriber.findUniqueOrThrow({where:{id:fan.id}});assert.equal(fan.mailjetSyncPending,true);assert.ok(fan.unsubscribedAt);assert.equal(fan.mailjetLease,null);
+   await syncMailjet(db,async snapshot=>{assert.ok(snapshot.unsubscribedAt);return {waitlistOptOut:true,newsletterOptOut:true};},1);
+   fan=await db.subscriber.findUniqueOrThrow({where:{id:fan.id}});assert.equal(fan.mailjetSyncPending,false);assert.ok(fan.mailjetSyncedAt);assert.equal(fan.mailjetLastError,null);
+   await subscribe(db,signupInput.parse({firstName:'Provider Optout',email:'provider-optout@example.com',source:'newsletter',newsletter:true}));
+   await syncMailjet(db,async()=>({waitlistOptOut:false,newsletterOptOut:true}),1);
+   assert.ok((await db.subscriber.findUniqueOrThrow({where:{email:'provider-optout@example.com'}})).unsubscribedAt);
+   await subscribe(db,signupInput.parse({firstName:'Webhook Fan',email:'webhook-fan@example.com',source:'waitlist',newsletter:true}));
+   const event=mailjetEventsInput.parse({event:'unsub',email:'WEBHOOK-FAN@example.com',time:Math.floor(Date.now()/1000),mj_list_id:456,Message_GUID:'mock-event-1'});
+   assert.equal((await applyMailjetEvents(db,event)).applied,1);assert.equal((await applyMailjetEvents(db,event)).applied,0);
+   fan=await db.subscriber.findUniqueOrThrow({where:{email:'webhook-fan@example.com'}});assert.ok(fan.unsubscribedAt);assert.equal(fan.waitlistUnsubscribedAt,null);
+   const before=await db.subscriberConsent.count({where:{subscriberId:fan.id}});
+   await applyMailjetEvents(db,mailjetEventsInput.parse({event:'unsub',email:fan.email,time:1,mj_list_id:123}));assert.equal(await db.subscriberConsent.count({where:{subscriberId:fan.id}}),before);
+   await applyMailjetEvents(db,mailjetEventsInput.parse({event:'bounce',email:fan.email,time:Math.floor(Date.now()/1000),hard_bounce:false}));assert.equal((await db.subscriber.findUniqueOrThrow({where:{id:fan.id}})).mailjetSuppressedAt,null);
+   await applyMailjetEvents(db,mailjetEventsInput.parse({event:'spam',email:fan.email,time:Math.floor(Date.now()/1000)}));
+   await subscribe(db,signupInput.parse({firstName:'Webhook Fan',email:fan.email,source:'newsletter',newsletter:true}));
+   fan=await db.subscriber.findUniqueOrThrow({where:{id:fan.id}});assert.ok(fan.mailjetSuppressedAt);assert.ok(!(await subscriberOverview(db,owner,subscriberFilters.parse({list:'newsletter'}))).subscribers.some(s=>s.id===fan.id));
+   const api=await import('../../src/app/api/mailjet/webhook/route');process.env.MAILJET_WEBHOOK_SECRET='f'.repeat(64);
+   const req=(auth?:string)=>new Request('http://localhost:3000/api/mailjet/webhook',{method:'POST',headers:{'content-type':'application/json',...(auth?{authorization:auth}:{})},body:JSON.stringify(event)});
+   assert.equal((await api.POST(req())).status,401);assert.equal((await api.POST(req('Basic '+Buffer.from('mailjet:'+process.env.MAILJET_WEBHOOK_SECRET).toString('base64')))).status,200);
+   await assert.rejects(()=>retrySubscriberSync(db,outsider,fan.id),e=>e instanceof AppError&&e.status===403);
+   await db.subscriber.update({where:{id:fan.id},data:{mailjetLockedUntil:new Date(Date.now()+60000)}});
+   await assert.rejects(()=>retrySubscriberSync(db,owner,fan.id),e=>e instanceof AppError&&e.code==='SYNC_IN_PROGRESS');
+   await db.subscriber.update({where:{id:fan.id},data:{mailjetLockedUntil:null}});await retrySubscriberSync(db,owner,fan.id);
+   assert.ok(await db.auditLog.count({where:{action:'MAILJET_SYNC_REQUEUED',entityId:fan.id}}));
+   const adminSubscribers=await import('../../src/app/api/admin/subscribers/route');
+   assert.equal((await adminSubscribers.POST(new Request('http://localhost:3000/api/admin/subscribers',{method:'POST',headers:{origin:'https://foreign.example','content-type':'application/json'},body:'{}'}))).status,403);
+   process.env.MAILJET_ENABLED='false';
   });
   await t.test('persistent account quota blocks the 61st request',async()=>{for(let i=0;i<60;i++) await rateLimit(db,'quota-test');await assert.rejects(()=>rateLimit(db,'quota-test'),e=>e instanceof AppError&&e.status===429);});
  }finally{

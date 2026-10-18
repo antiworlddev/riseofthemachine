@@ -464,3 +464,297 @@ body:has(.waitlist-dialog[open]) {
     scroll-behavior: auto;
   }
 }
+
+/* Living artwork: a masked portrait above the artist lettering, with independent glow. */
+.launch-hero {
+  isolation: isolate;
+}
+.launch-art {
+  background:
+    radial-gradient(
+      ellipse at 50% 44%,
+      #4a0c173d 0,
+      #1c090e45 34%,
+      transparent 68%
+    ),
+    radial-gradient(ellipse at 0 80%, #47101c26, transparent 48%), #090708;
+}
+.launch-art::after {
+  background: linear-gradient(180deg, transparent 64%, #070707 100%);
+}
+.launch-top {
+  z-index: 4;
+}
+.launch-content {
+  z-index: 2;
+  padding-bottom: 48px;
+}
+.launch-art-stage {
+  position: relative;
+  isolation: isolate;
+  width: min(100%, 1120px);
+  height: clamp(400px, 38vw, 500px);
+}
+.launch-art-stage .launch-artist {
+  position: relative;
+  z-index: 0;
+  font-size: clamp(44px, 8.4vw, 110px);
+}
+.launch-head-parallax {
+  --head-x: 0px;
+  --head-y: 0px;
+  --head-tilt: 0deg;
+  position: absolute;
+  z-index: 1;
+  top: 45px;
+  left: 50%;
+  width: min(68vw, 480px);
+  aspect-ratio: 575 / 565;
+  pointer-events: none;
+  transform: translate3d(calc(-50% + var(--head-x)), var(--head-y), 0)
+    rotate(var(--head-tilt));
+}
+.launch-head-float {
+  width: 100%;
+  height: 100%;
+  animation: machine-float 7.5s ease-in-out infinite;
+  transform-origin: 50% 48%;
+}
+.launch-head-crop {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.launch-head-image,
+.launch-head-energy {
+  /* Clip the supplied 772 x 992 artwork in CSS; preserve the face pixels. */
+  position: absolute;
+  width: 134.261%;
+  height: 175.575%;
+  max-width: none;
+  left: -25.217%;
+  top: -37.363%;
+}
+.launch-head-image {
+  object-fit: fill;
+  user-select: none;
+}
+.launch-head-energy {
+  background: url("/prelaunch/odumo-head.png") 0 0 / 100% 100% no-repeat;
+  mask-image: radial-gradient(
+    ellipse 30% 23% at 58% 52%,
+    transparent 50%,
+    #000 80%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 30% 23% at 58% 52%,
+    transparent 50%,
+    #000 80%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.16;
+  filter: saturate(1.6) brightness(1.45);
+  animation: machine-energy 4.7s ease-in-out infinite;
+}
+.launch-eye-glow {
+  position: absolute;
+  left: 40%;
+  top: 28.5%;
+  width: 7%;
+  aspect-ratio: 1;
+  background: radial-gradient(
+    circle,
+    #ffccd130 0,
+    #ff193b55 20%,
+    #ff193b00 70%
+  );
+  border-radius: 50%;
+  mix-blend-mode: screen;
+  opacity: 0.25;
+  animation: machine-eye 6.3s ease-in-out infinite;
+}
+.launch-content > .launch-title {
+  position: relative;
+  z-index: 3;
+  margin-top: 6px;
+}
+.launch-date,
+.launch-invite,
+.launch-content > .fan-button {
+  position: relative;
+  z-index: 3;
+}
+.launch-embers {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 1;
+  pointer-events: none;
+}
+.launch-embers i {
+  position: absolute;
+  left: 12%;
+  bottom: 6%;
+  width: 2px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ff4a65;
+  box-shadow: 0 0 7px #ff244755;
+  opacity: 0;
+  animation: machine-ember 11s linear infinite;
+}
+.launch-embers i:nth-child(2) {
+  left: 22%;
+  animation-delay: -4s;
+  animation-duration: 13s;
+}
+.launch-embers i:nth-child(3) {
+  left: 35%;
+  animation-delay: -8s;
+  width: 1px;
+}
+.launch-embers i:nth-child(4) {
+  left: 78%;
+  animation-delay: -2s;
+  animation-duration: 14s;
+}
+.launch-embers i:nth-child(5) {
+  left: 88%;
+  animation-delay: -7s;
+  width: 1px;
+}
+.launch-embers i:nth-child(6) {
+  left: 65%;
+  animation-delay: -10s;
+  animation-duration: 12s;
+}
+.launch-embers i:nth-child(7) {
+  left: 7%;
+  animation-delay: -5s;
+  animation-duration: 15s;
+}
+.launch-embers i:nth-child(8) {
+  left: 92%;
+  animation-delay: -11s;
+  animation-duration: 14s;
+}
+.launch-embers i:nth-child(n + 9) {
+  display: none;
+}
+.launch-hero:not([data-motion="running"]) .launch-head-float,
+.launch-hero:not([data-motion="running"]) .launch-head-energy,
+.launch-hero:not([data-motion="running"]) .launch-eye-glow,
+.launch-hero:not([data-motion="running"]) .launch-embers i {
+  animation-play-state: paused;
+}
+body:has(.waitlist-dialog[open]) .launch-hero * {
+  animation-play-state: paused !important;
+}
+@keyframes machine-float {
+  0%,
+  100% {
+    transform: translate3d(0, 3px, 0) rotate(-0.4deg);
+  }
+  50% {
+    transform: translate3d(0, -6px, 0) rotate(0.4deg);
+  }
+}
+@keyframes machine-energy {
+  0%,
+  100% {
+    opacity: 0.1;
+  }
+  45% {
+    opacity: 0.27;
+  }
+  52% {
+    opacity: 0.16;
+  }
+  65% {
+    opacity: 0.24;
+  }
+}
+@keyframes machine-eye {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  40%,
+  58% {
+    opacity: 0.4;
+  }
+  49% {
+    opacity: 0.24;
+  }
+}
+@keyframes machine-ember {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(-18deg);
+  }
+  14% {
+    opacity: 0.45;
+  }
+  75% {
+    opacity: 0.2;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(28px, -560px, 0) rotate(15deg);
+  }
+}
+@media (min-width: 1600px) {
+  .launch-content > .launch-title {
+    margin-top: 6px;
+  }
+}
+@media (max-width: 700px) {
+  .launch-content {
+    padding: 16px 16px 40px;
+  }
+  .launch-art-stage {
+    height: clamp(320px, 95vw, 390px);
+  }
+  .launch-art-stage .launch-artist {
+    font-size: clamp(42px, 12vw, 68px);
+  }
+  .launch-head-parallax {
+    top: 24px;
+    width: min(94vw, 370px);
+  }
+  .launch-content > .launch-title {
+    margin-top: 0;
+  }
+  .launch-hero {
+    min-height: max(780px, 100svh);
+  }
+  .newsletter-copy h2 {
+    font-size: clamp(44px, 11vw, 64px);
+  }
+  .launch-embers i:nth-child(n + 6) {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prelaunch-page *,
+  .prelaunch-page *::before,
+  .prelaunch-page *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .launch-head-parallax {
+    transform: translate3d(-50%, 0, 0) !important;
+  }
+  .launch-head-float {
+    transform: none;
+  }
+  .launch-head-energy {
+    opacity: 0.16;
+  }
+  .launch-eye-glow {
+    opacity: 0.2;
+  }
+  .launch-embers {
+    display: none;
+  }
+}

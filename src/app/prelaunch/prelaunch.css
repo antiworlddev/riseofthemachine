@@ -396,8 +396,8 @@ body:has(.waitlist-dialog[open]) {
     padding: 16px 22px;
   }
   .launch-logo {
-    width: 58px;
-    height: 77px;
+    width: 35px;
+    height: 51px;
   }
   .launch-top > span {
     font-size: 8px;

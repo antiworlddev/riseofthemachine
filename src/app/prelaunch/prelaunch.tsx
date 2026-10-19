@@ -197,7 +197,9 @@ export default function Prelaunch() {
             COMMUNITY<span>.</span>
           </h2>
           <p>Subscribe to ODUMODUBLVCK’s newsletter.</p>
-          <p>Personal mails. First updates. A little closer to the Machine.</p>
+          <p>
+            Get personal mails. First updates. A little closer to the Machine.
+          </p>
         </div>
         <div className="newsletter-form">
           <h3>Stay in the loop.</h3>

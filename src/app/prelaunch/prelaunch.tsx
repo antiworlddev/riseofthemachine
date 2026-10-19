@@ -122,6 +122,13 @@ export default function Prelaunch() {
               height="1809"
             />
           </a>
+          <img
+            className="launch-logo-defjam"
+            src="/images/defjam.png"
+            alt="DEFJAM Recordings"
+            width="1809"
+            height="1809"
+          />
         </header>
         <div className="launch-content">
           <div className="launch-art-stage">
@@ -155,15 +162,22 @@ export default function Prelaunch() {
             width="1200"
             height="180"
           />
-          <p className="launch-date">
+          {/* <p className="launch-date">
             DEC 19 & 20 <span>2026 · ABUJA</span>
-          </p>
+          </p> */}
           <button
             ref={trigger}
             className="fan-button"
-            onClick={() => dialog.current?.showModal()}
+            // onClick={() => dialog.current?.showModal()}
+            onClick={() => {
+              const newsletter = document.getElementById("newsletter");
+              newsletter?.scrollIntoView({
+                behavior: "smooth",
+                block: "start",
+              });
+            }}
           >
-            Join the waitlist <span aria-hidden="true">↗</span>
+            Inside The Machine <span aria-hidden="true">↗</span>
           </button>
           {/* <a className="launch-newsletter-link" href="#newsletter">
             Personal mails from OD ↓
